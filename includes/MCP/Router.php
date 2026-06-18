@@ -466,7 +466,7 @@ final class Router {
 			'menu'               => 'Manage WordPress navigation menus for the current site; requires an action and a menu target when writing.',
 			'component'          => 'Manage Bricks components for the current site; requires an action and component-specific identifiers when writing.',
 			'woocommerce'        => 'Manage WooCommerce builder data for the current site; requires WooCommerce to be active and an action.',
-			'code'               => 'Manage page-level custom CSS and scripts for a given post; requires an action and a post ID.',
+			'code'               => 'Manage page-level custom CSS and scripts for a given post; set_page_css and set_page_scripts require dangerous_actions enabled.',
 			'wordpress'          => 'Read WordPress core data for the current site; requires a read-only action scoped to posts, users, or plugins.',
 			'page'               => 'Manage Bricks pages for the current site; requires an action and a page target when writing.',
 			'element'            => 'Manage Bricks elements for a given page; requires an action and explicit element identifiers when writing.',
@@ -704,8 +704,11 @@ final class Router {
 			'list_pages'             => array( 'name' => 'content', 'arguments' => array( 'action' => 'list' ) ),
 			'search_pages'           => array( 'name' => 'content', 'arguments' => array( 'action' => 'search' ) ),
 			'get_bricks_content'     => array( 'name' => 'content', 'arguments' => array( 'action' => 'get' ) ),
+			'get_bricks_page'        => array( 'name' => 'content', 'arguments' => array( 'action' => 'get' ) ),
 			'create_bricks_page'     => array( 'name' => 'content', 'arguments' => array( 'action' => 'create' ) ),
 			'update_bricks_content'  => array( 'name' => 'content', 'arguments' => array( 'action' => 'update_content' ) ),
+			'update_bricks_page'     => array( 'name' => 'content', 'arguments' => array( 'action' => 'update_content' ) ),
+			'delete_bricks_element'  => array( 'name' => 'content', 'arguments' => array( 'action' => 'remove' ) ),
 			'update_page'            => array( 'name' => 'content', 'arguments' => array( 'action' => 'update_meta' ) ),
 			'delete_page'            => array( 'name' => 'content', 'arguments' => array( 'action' => 'delete' ) ),
 			'duplicate_page'         => array( 'name' => 'content', 'arguments' => array( 'action' => 'duplicate' ) ),
@@ -773,6 +776,7 @@ final class Router {
 			'batch_delete_global_variables' => array( 'name' => 'design', 'arguments' => array( 'domain' => 'global_variable', 'action' => 'batch_delete' ) ),
 			'get_media_library'     => array( 'name' => 'media', 'arguments' => array( 'action' => 'list' ) ),
 			'search_unsplash'       => array( 'name' => 'media', 'arguments' => array( 'action' => 'search_unsplash' ) ),
+			'search_media'          => array( 'name' => 'media', 'arguments' => array( 'action' => 'search_unsplash' ) ),
 			'sideload_image'        => array( 'name' => 'media', 'arguments' => array( 'action' => 'sideload' ) ),
 			'set_featured_image'    => array( 'name' => 'media', 'arguments' => array( 'action' => 'set_featured' ) ),
 			'remove_featured_image' => array( 'name' => 'media', 'arguments' => array( 'action' => 'remove_featured' ) ),
@@ -2100,7 +2104,7 @@ final class Router {
 		// Custom code consolidated tool.
 		$this->register_tool(
 			'code',
-			__( "Manage page-level custom CSS and JavaScript.\n\nActions:\n- get_page_css: Get page custom CSS and scripts (requires: post_id)\n- set_page_css: Set page custom CSS (requires: post_id, css)\n- get_page_scripts: Get page custom scripts only (requires: post_id)\n- set_page_scripts: Set page custom scripts (requires: post_id; optional: header, body_header, body_footer) [dangerous_actions required]", 'bricks-mcp' ),
+			__( "Manage page-level custom CSS and JavaScript.\n\nActions:\n- get_page_css: Get page custom CSS and scripts (requires: post_id)\n- set_page_css: Set page custom CSS (requires: post_id, css) [dangerous_actions required]\n- get_page_scripts: Get page custom scripts only (requires: post_id)\n- set_page_scripts: Set page custom scripts (requires: post_id; optional: header, body_header, body_footer) [dangerous_actions required]", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
