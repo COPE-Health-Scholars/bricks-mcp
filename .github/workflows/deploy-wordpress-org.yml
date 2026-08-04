@@ -1,23 +1,35 @@
-# Deploys the plugin to WordPress.org SVN (free/open-source distribution).
+# DISABLED ON THIS FORK.
 #
-# Note: release.yml handles GitHub Releases for the license-gated paid distribution.
-# Both workflows trigger on the same tag pattern (v*), so a single tag push
-# will simultaneously publish to WordPress.org and create a GitHub Release.
+# This workflow publishes to the WordPress.org plugin directory under the slug `bricks-mcp`,
+# which belongs to the upstream author (cristianuibar), not to this fork. Publishing from
+# here would push our patched build out as the official public plugin release.
 #
-# WordPress.org plugin slug: bricks-mcp
-# Required repository secrets: SVN_USERNAME, SVN_PASSWORD
+# Two independent safeguards, so re-enabling has to be deliberate:
+#   1. The `push: tags: v*` trigger is removed, so tagging a release here can never start it.
+#      Only a manual dispatch can, and that requires choosing this workflow by name.
+#   2. The job is gated on `github.repository`, so even a manual dispatch no-ops on the fork.
+#
+# The file is kept rather than deleted so that merges from upstream apply cleanly and the
+# reasoning stays discoverable. release.yml still builds the distributable ZIP and attaches
+# it to a GitHub Release in this repository, which is the correct channel for a fork.
+#
+# To re-enable intentionally (only if this fork ever owns a WP.org slug): restore the tag
+# trigger, change the slug, and set the SVN_USERNAME / SVN_PASSWORD repository secrets.
+#
+# Original WordPress.org plugin slug: bricks-mcp
+# Required repository secrets (not set on this fork): SVN_USERNAME, SVN_PASSWORD
 
-name: Deploy to WordPress.org
+name: Deploy to WordPress.org (disabled)
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 jobs:
   deploy:
     name: Deploy plugin to WordPress.org
     runs-on: ubuntu-latest
+    # Hard guard: never runs on a fork. Upstream's own repo is the only place this is valid.
+    if: github.repository == 'cristianuibar/bricks-mcp'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

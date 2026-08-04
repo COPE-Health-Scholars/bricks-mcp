@@ -1,9 +1,21 @@
+# Builds the distributable plugin ZIP.
+#
+# Tag push (v*)        -> builds, then creates a GitHub Release in THIS repository.
+# Manual dispatch      -> builds only, and uploads the ZIP as a run artifact. Use this to get
+#                         an installable build of an unreleased commit (e.g. to deploy a fix
+#                         to staging) without creating a tag or a public release.
+#
+# Note: this publishes only to this repository's Releases. Publishing to the WordPress.org
+# directory is a separate workflow, deliberately disabled on this fork - see
+# deploy-wordpress-org.yml.
+
 name: Build Release
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,10 +35,24 @@ jobs:
         if: hashFiles('composer.json') != ''
         run: composer install --no-dev --optimize-autoloader --no-interaction
 
-      - name: Stamp version from tag
+      - name: Resolve version
+        id: version
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "Stamping version: $VERSION"
+          set -euo pipefail
+          # On a tag, the tag IS the version. On a manual dispatch there is no tag, so derive
+          # an unmistakably non-release version rather than stamping the branch name.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
+          fi
+          echo "Resolved version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
           sed -i "s/^ \* Version:.*/ * Version:           $VERSION/" bricks-mcp.php
           sed -i "s/define( 'BRICKS_MCP_VERSION', '.*' );/define( 'BRICKS_MCP_VERSION', '$VERSION' );/" bricks-mcp.php
           sed -i "s/^Stable tag:.*/Stable tag: $VERSION/" readme.txt
@@ -36,7 +62,7 @@ jobs:
 
       - name: Build plugin ZIP
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          set -euo pipefail
           mkdir -p build/bricks-mcp
           rsync -a \
             --exclude='.git' \
@@ -60,6 +86,7 @@ jobs:
             --exclude='.wordpress-org' \
             --exclude='.distignore' \
             ./ build/bricks-mcp/
+          test -f build/bricks-mcp/vendor/autoload.php
           cd build && zip -r "bricks-mcp.zip" bricks-mcp/
 
       - name: Generate SHA-256 checksum
@@ -67,7 +94,19 @@ jobs:
           cd build
           sha256sum bricks-mcp.zip > bricks-mcp.zip.sha256
 
+      # Manual builds are downloadable from the run summary instead of becoming a release.
+      - name: Upload ZIP as run artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bricks-mcp-${{ steps.version.outputs.version }}
+          path: |
+            build/bricks-mcp.zip
+            build/bricks-mcp.zip.sha256
+          if-no-files-found: error
+
       - name: Create GitHub Release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |
