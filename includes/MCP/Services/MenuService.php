@@ -379,12 +379,37 @@ class MenuService {
 		// Step 2: Insert new items from the nested tree.
 		$result = $this->insert_items_recursive( $menu_id, $items, 0 );
 
-		return array(
+		$response = array(
 			'menu_id'       => $menu_id,
 			'items_deleted' => $old_count,
 			'items_created' => count( $result['created_ids'] ),
 			'items'         => $this->build_item_tree( $menu_id ),
 		);
+
+		/*
+		 * Surface per-item failures. insert_items_recursive() records a reason for every item it
+		 * skips, but those were discarded: after force-deleting every existing item, a run where
+		 * 4 of 10 items failed validation reported items_created: 6 and nothing else, so partial
+		 * data loss on a destructive operation was indistinguishable from success.
+		 */
+		if ( ! empty( $result['errors'] ) ) {
+			$failed_count = count( $result['errors'] );
+
+			$response['items_failed'] = $failed_count;
+			$response['errors']       = $result['errors'];
+			$response['warning']      = sprintf(
+				/* translators: %d: number of menu items that could not be created */
+				_n(
+					'%d menu item could not be created and was skipped. The previous items were already deleted, so this menu is now incomplete — review errors and re-send.',
+					'%d menu items could not be created and were skipped. The previous items were already deleted, so this menu is now incomplete — review errors and re-send.',
+					$failed_count,
+					'bricks-mcp'
+				),
+				$failed_count
+			);
+		}
+
+		return $response;
 	}
 
 	/**

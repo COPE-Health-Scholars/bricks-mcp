@@ -900,6 +900,19 @@ class BricksService {
 			}
 		}
 
+		/*
+		 * Assign taxonomy terms. The schema documents tags/bundles as "create, update: assign",
+		 * but term assignment previously existed only on the update path, so a create silently
+		 * discarded them and callers had to issue a second update call to tag anything.
+		 */
+		if ( ! empty( $args['tags'] ) && is_array( $args['tags'] ) ) {
+			wp_set_object_terms( $post_id, $args['tags'], 'template_tag' );
+		}
+
+		if ( ! empty( $args['bundles'] ) && is_array( $args['bundles'] ) ) {
+			wp_set_object_terms( $post_id, $args['bundles'], 'template_bundle' );
+		}
+
 		return $post_id;
 	}
 
@@ -1327,7 +1340,9 @@ class BricksService {
 		$new_class = [
 			'id'     => $new_id,
 			'name'   => $name,
-			'color'  => isset( $args['color'] ) ? sanitize_text_field( $args['color'] ) : '#686868',
+			// is_string guard: the design tool's `color` accepts an object for color_palette, so
+			// a non-string can reach here. Fall back to the default rather than fatal.
+			'color'  => isset( $args['color'] ) && is_string( $args['color'] ) ? sanitize_text_field( $args['color'] ) : '#686868',
 			'styles' => $this->sanitize_styles_array( $args['styles'] ?? [] ),
 		];
 
@@ -1392,7 +1407,7 @@ class BricksService {
 				$class['name'] = $new_name;
 			}
 
-			if ( isset( $args['color'] ) ) {
+			if ( isset( $args['color'] ) && is_string( $args['color'] ) ) {
 				$class['color'] = sanitize_text_field( $args['color'] );
 			}
 
@@ -4034,7 +4049,7 @@ class BricksService {
 	 * @param bool                      $replace_section If true, replace entire group instead of merging.
 	 * @return array<string, mixed>|\WP_Error Update result or WP_Error on failure.
 	 */
-	public function update_theme_style( string $style_id, ?string $label = null, ?array $settings = null, ?array $conditions = null, bool $replace_section = false ): array|\WP_Error {
+	public function update_theme_style( string $style_id, ?string $label = null, ?array $settings = null, ?array $conditions = null, bool $replace_section = false, ?bool $active = null ): array|\WP_Error {
 		$styles = get_option( 'bricks_theme_styles', [] );
 
 		if ( ! is_array( $styles ) ) {
@@ -4084,6 +4099,26 @@ class BricksService {
 		// Update conditions if provided (including empty array to clear).
 		if ( null !== $conditions ) {
 			$styles[ $style_id ]['settings']['conditions'] = [ 'conditions' => $conditions ];
+		}
+
+		/*
+		 * Apply `active`. A Bricks theme style is active precisely when it has conditions - the
+		 * soft-delete path deactivates by clearing them - so activation state is expressed
+		 * through conditions rather than a flag of its own. The schema advertised `active` on
+		 * update but nothing read it, so activation state was silently untouched.
+		 *
+		 * Applied after $conditions so the two compose: passing explicit conditions with
+		 * active=true keeps those conditions, while active=false clears them either way.
+		 */
+		if ( null !== $active ) {
+			$current = $styles[ $style_id ]['settings']['conditions']['conditions'] ?? [];
+
+			if ( false === $active ) {
+				$styles[ $style_id ]['settings']['conditions'] = [ 'conditions' => [] ];
+			} elseif ( empty( $current ) ) {
+				// No conditions means inactive; the site-wide condition is main => 'any'.
+				$styles[ $style_id ]['settings']['conditions'] = [ 'conditions' => [ [ 'main' => 'any' ] ] ];
+			}
 		}
 
 		update_option( 'bricks_theme_styles', $styles );
@@ -5017,7 +5052,7 @@ class BricksService {
 	 * @param array<string> $utility_classes Optional utility class types.
 	 * @return array<string, mixed>|\WP_Error Created color or WP_Error on failure.
 	 */
-	public function add_color_to_palette( string $palette_id, string $light, string $name, string $raw = '', string $parent = '', array $utility_classes = [] ): array|\WP_Error {
+	public function add_color_to_palette( string $palette_id, string $light, string $name, string $raw = '', string $parent = '', array $utility_classes = [], ?int $position = null ): array|\WP_Error {
 		$hex = sanitize_hex_color( $light );
 
 		if ( null === $hex ) {
@@ -5118,7 +5153,21 @@ class BricksService {
 			);
 		}
 
-		$palettes[ $palette_index ]['colors'][] = $color_obj;
+		/*
+		 * Honour `position`. The schema advertises it as "Position in palette (add_color:
+		 * optional)" but nothing read it, so colors were always appended and a caller's
+		 * ordering was silently discarded. Out-of-range values clamp to an append.
+		 */
+		if ( ! isset( $palettes[ $palette_index ]['colors'] ) || ! is_array( $palettes[ $palette_index ]['colors'] ) ) {
+			$palettes[ $palette_index ]['colors'] = [];
+		}
+
+		if ( null !== $position && $position >= 0 && $position < count( $palettes[ $palette_index ]['colors'] ) ) {
+			array_splice( $palettes[ $palette_index ]['colors'], $position, 0, [ $color_obj ] );
+		} else {
+			$palettes[ $palette_index ]['colors'][] = $color_obj;
+		}
+
 		update_option( 'bricks_color_palette', $palettes );
 
 		$css_regenerated = $this->regenerate_style_manager_css();
@@ -6457,7 +6506,15 @@ class BricksService {
 			$settings = [];
 		}
 
+		/*
+		 * customCss belongs in the gated set alongside the script keys. It was previously
+		 * ungated here, which made this method a bypass around update_page_css()'s
+		 * dangerous-actions gate, 100 KB cap and injection-pattern rejection: the same
+		 * customCss value refused by code:set_page_css was accepted raw via
+		 * page:update_settings.
+		 */
 		$js_gated_keys   = [ 'customScriptsHeader', 'customScriptsBodyHeader', 'customScriptsBodyFooter' ];
+		$gated_keys      = array_merge( $js_gated_keys, [ 'customCss' ] );
 		$text_fields     = [ 'bodyClasses', 'postTitle', 'documentTitle', 'metaKeywords', 'sharingTitle' ];
 		$textarea_fields = [ 'metaDescription', 'sharingDescription' ];
 
@@ -6479,14 +6536,28 @@ class BricksService {
 				continue;
 			}
 
-			// Check JS-gated keys.
-			if ( in_array( $key, $js_gated_keys, true ) && ! $this->is_dangerous_actions_enabled() ) {
+			// Check code-gated keys (custom scripts and custom CSS).
+			if ( in_array( $key, $gated_keys, true ) && ! $this->is_dangerous_actions_enabled() ) {
 				$rejected[]      = [
 					'key'    => $key,
 					'reason' => __( 'requires dangerous actions mode (Settings > Bricks MCP > Enable Dangerous Actions)', 'bricks-mcp' ),
 				];
 				$rejected_keys[] = $key;
 				continue;
+			}
+
+			// Apply the same CSS safety checks code:set_page_css enforces.
+			if ( 'customCss' === $key && is_string( $value ) && '' !== $value ) {
+				$css_safe = $this->validate_custom_css( $value );
+
+				if ( is_wp_error( $css_safe ) ) {
+					$rejected[]      = [
+						'key'    => $key,
+						'reason' => $css_safe->get_error_message(),
+					];
+					$rejected_keys[] = $key;
+					continue;
+				}
 			}
 
 			// Null value = delete.
@@ -7390,11 +7461,23 @@ class BricksService {
 		$page_settings_key = defined( 'BRICKS_DB_PAGE_SETTINGS' ) ? BRICKS_DB_PAGE_SETTINGS : '_bricks_page_settings';
 		$stripped_js_keys  = array();
 		if ( ! empty( $data['pageSettings'] ) && is_array( $data['pageSettings'] ) ) {
-			$js_gated_keys = array( 'customScriptsHeader', 'customScriptsBodyHeader', 'customScriptsBodyFooter' );
+			/*
+			 * customCss is gated here too. Stripping only the script keys left an imported
+			 * template able to carry arbitrary unvalidated page CSS onto the site, which is the
+			 * same bypass that existed in update_page_settings().
+			 */
+			$js_gated_keys = array( 'customScriptsHeader', 'customScriptsBodyHeader', 'customScriptsBodyFooter', 'customCss' );
 			$page_settings = $data['pageSettings'];
 			if ( ! $this->is_dangerous_actions_enabled() ) {
 				$stripped_js_keys = array_values( array_intersect( array_keys( $page_settings ), $js_gated_keys ) );
 				$page_settings    = array_diff_key( $page_settings, array_flip( $js_gated_keys ) );
+			} elseif ( isset( $page_settings['customCss'] ) && is_string( $page_settings['customCss'] ) && '' !== $page_settings['customCss'] ) {
+				// Dangerous actions enabled: still enforce the size cap and pattern rejection.
+				$css_safe = $this->validate_custom_css( $page_settings['customCss'] );
+
+				if ( is_wp_error( $css_safe ) ) {
+					return $css_safe;
+				}
 			}
 			update_post_meta( $template_id, $page_settings_key, $page_settings );
 		}
@@ -8065,6 +8148,48 @@ class BricksService {
 	 * @param string $css     Custom CSS code. Empty string removes CSS.
 	 * @return array<string, mixed>|\WP_Error Update result or error.
 	 */
+	/**
+	 * Validate custom CSS before it is persisted (GitHub #11).
+	 *
+	 * Extracted so that EVERY path writing customCss shares one implementation. It previously
+	 * lived inline in update_page_css(), which left page:update_settings /
+	 * content:update_settings able to write customCss raw - allowlisted, ungated and
+	 * unsanitized - bypassing this hardening entirely.
+	 *
+	 * @param string $css Custom CSS to check.
+	 * @return true|\WP_Error True when safe to store.
+	 */
+	private function validate_custom_css( string $css ): true|\WP_Error {
+		// Enforce a 100 KB hard cap; no legitimate page CSS needs more.
+		if ( strlen( $css ) > 102400 ) {
+			return new \WP_Error(
+				'css_too_large',
+				__( 'CSS exceeds the 100 KB limit. Split into smaller blocks or use a stylesheet.', 'bricks-mcp' )
+			);
+		}
+
+		// Reject patterns that enable code execution or data exfiltration.
+		$dangerous_patterns = array(
+			'/url\s*\(\s*["\']?\s*javascript:/i',
+			'/expression\s*\(/i',
+			'/@import\s/i',
+			'/url\s*\(\s*["\']?\s*data:/i',
+			'/behaviour\s*:/i',
+			'/-moz-binding\s*:/i',
+		);
+
+		foreach ( $dangerous_patterns as $pattern ) {
+			if ( preg_match( $pattern, $css ) ) {
+				return new \WP_Error(
+					'css_unsafe_content',
+					__( 'CSS contains disallowed patterns (javascript:, expression(), @import, data:, behaviour:). Remove them and try again.', 'bricks-mcp' )
+				);
+			}
+		}
+
+		return true;
+	}
+
 	public function update_page_css( int $post_id, string $css ): array|\WP_Error {
 		if ( ! $this->is_dangerous_actions_enabled() ) {
 			return new \WP_Error(
@@ -8096,31 +8221,10 @@ class BricksService {
 		if ( '' === $css ) {
 			unset( $settings['customCss'] );
 		} else {
-			// Sanitize CSS before storing (GitHub #11).
-			// Enforce a 100 KB hard cap; no legitimate page CSS needs more.
-			if ( strlen( $css ) > 102400 ) {
-				return new \WP_Error(
-					'css_too_large',
-					__( 'CSS exceeds the 100 KB limit. Split into smaller blocks or use a stylesheet.', 'bricks-mcp' )
-				);
-			}
+			$css_safe = $this->validate_custom_css( $css );
 
-			// Strip patterns that enable code execution or data exfiltration.
-			$dangerous_patterns = array(
-				'/url\s*\(\s*["\']?\s*javascript:/i',
-				'/expression\s*\(/i',
-				'/@import\s/i',
-				'/url\s*\(\s*["\']?\s*data:/i',
-				'/behaviour\s*:/i',
-				'/-moz-binding\s*:/i',
-			);
-			foreach ( $dangerous_patterns as $pattern ) {
-				if ( preg_match( $pattern, $css ) ) {
-					return new \WP_Error(
-						'css_unsafe_content',
-						__( 'CSS contains disallowed patterns (javascript:, expression(), @import, data:, behaviour:). Remove them and try again.', 'bricks-mcp' )
-					);
-				}
+			if ( is_wp_error( $css_safe ) ) {
+				return $css_safe;
 			}
 
 			$settings['customCss'] = $css;

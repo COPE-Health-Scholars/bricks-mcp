@@ -193,6 +193,35 @@ final class Router {
 						'enum'        => array( 'ASC', 'DESC' ),
 						'description' => __( 'Sort order (get_posts: ASC or DESC)', 'bricks-mcp' ),
 					),
+					/*
+					 * The five filters below are read by tool_get_posts()/tool_get_users() but
+					 * were undeclared, so callers had no advertised way to search or paginate and
+					 * could only ever see page 1 of unfiltered results.
+					 */
+					's'              => array(
+						'type'        => 'string',
+						'description' => __( 'Full-text search term. Also accepted as "search". (get_posts: optional)', 'bricks-mcp' ),
+					),
+					'search'         => array(
+						'type'        => 'string',
+						'description' => __( 'Alias of "s" (get_posts: optional)', 'bricks-mcp' ),
+					),
+					'paged'          => array(
+						'type'        => 'integer',
+						'description' => __( 'Page number, 1-based (get_posts, get_users: optional, default 1)', 'bricks-mcp' ),
+					),
+					'category_name'  => array(
+						'type'        => 'string',
+						'description' => __( 'Filter by category slug (get_posts: optional)', 'bricks-mcp' ),
+					),
+					'tag'            => array(
+						'type'        => 'string',
+						'description' => __( 'Filter by tag slug (get_posts: optional)', 'bricks-mcp' ),
+					),
+					'author'         => array(
+						'type'        => 'integer',
+						'description' => __( 'Filter by author user ID (get_posts: optional)', 'bricks-mcp' ),
+					),
 					'id'             => array(
 						'type'        => 'integer',
 						'description' => __( 'Post ID (get_post: required)', 'bricks-mcp' ),
@@ -388,12 +417,17 @@ final class Router {
 	private function get_default_tool_defaults( string $name ): array {
 		return match ( $name ) {
 			'wordpress' => array(
+				/*
+				 * post_status is intentionally absent: get_posts hardcodes 'publish' as a
+				 * privacy control and ignores any caller value. Listing it here implied it was
+				 * an overridable default, so callers asking for drafts were silently given
+				 * published posts.
+				 */
 				'get_posts' => array(
 					'post_type'      => 'post',
 					'posts_per_page' => 10,
 					'orderby'        => 'date',
 					'order'          => 'DESC',
-					'post_status'    => 'publish',
 				),
 				'get_users' => array(
 					'number' => 10,
@@ -410,12 +444,17 @@ final class Router {
 					'paged'          => 1,
 					'bricks_only'    => true,
 				),
+				/*
+				 * post_status is intentionally absent: get_posts hardcodes 'publish' as a
+				 * privacy control and ignores any caller value. Listing it here implied it was
+				 * an overridable default, so callers asking for drafts were silently given
+				 * published posts.
+				 */
 				'get_posts' => array(
 					'post_type'      => 'post',
 					'posts_per_page' => 10,
 					'orderby'        => 'date',
 					'order'          => 'DESC',
-					'post_status'    => 'publish',
 				),
 			),
 			'page' => array(
@@ -596,6 +635,14 @@ final class Router {
 				'include_pii'    => array( 'type' => 'boolean' ),
 				'bricks_only'    => array( 'type' => 'boolean' ),
 				'search'         => array( 'type' => 'string' ),
+				// Kept in sync with the page/element/wordpress schemas this tool aggregates.
+				// Each of these is read by a reachable handler but was undeclared here.
+				's'              => array( 'type' => 'string' ),
+				'category_name'  => array( 'type' => 'string' ),
+				'tag'            => array( 'type' => 'string' ),
+				'author'         => array( 'type' => 'integer' ),
+				'featured_image' => array( 'type' => 'integer' ),
+				'label'          => array( 'type' => 'string' ),
 				'view'           => array( 'type' => 'string', 'enum' => array( 'detail', 'summary', 'visual' ) ),
 				'title'          => array( 'type' => 'string' ),
 				'elements'       => array( 'type' => 'array' ),
@@ -647,12 +694,31 @@ final class Router {
 				'class_name'  => array( 'type' => 'string' ),
 				'name'        => array( 'type' => 'string' ),
 				'styles'      => array( 'type' => 'object' ),
-				'color'       => array( 'type' => 'object' ),
+				/*
+				 * `color` is overloaded across domains: color_palette passes an object of color
+				 * fields, while global_class create/update expects a hex string. Typing it as
+				 * object-only hard-rejected every valid global_class call with invalid_arguments,
+				 * so both shapes are permitted here and each handler validates its own.
+				 */
+				'color'       => array( 'type' => array( 'object', 'string' ) ),
 				'category'    => array( 'type' => 'string' ),
 				'post_id'     => array( 'type' => 'integer' ),
 				'element_ids' => array( 'type' => 'array' ),
 				'classes'     => array( 'type' => 'array' ),
 				'css'         => array( 'type' => 'string' ),
+				// Read by handlers reachable through this tool but previously undeclared here,
+				// which made typography_scale create unsatisfiable from the advertised schema.
+				'settings'    => array( 'type' => 'object' ),
+				'prefix'      => array( 'type' => 'string' ),
+				'steps'       => array( 'type' => 'array' ),
+				'utility_classes' => array( 'type' => 'array' ),
+				'replace_styles'  => array( 'type' => 'boolean' ),
+				'query'       => array( 'type' => 'string' ),
+				'position'    => array( 'type' => 'integer' ),
+				'light'       => array( 'type' => 'string' ),
+				'raw'         => array( 'type' => 'string' ),
+				'parent'      => array( 'type' => 'string' ),
+				'parent_color_id' => array( 'type' => 'string' ),
 				'category_name' => array( 'type' => 'string' ),
 				'category_id' => array( 'type' => 'string' ),
 				'search'      => array( 'type' => 'string' ),
@@ -985,13 +1051,32 @@ final class Router {
 	private function tool_get_posts( array $args ): array {
 		$order = isset( $args['order'] ) && 'ASC' === strtoupper( (string) $args['order'] ) ? 'ASC' : 'DESC';
 
+		/*
+		 * Accept `search` as well as `s`. The content tool's schema declares `search`, and the
+		 * alias in tool_page() is gated on the search action, so get_posts never saw it — a
+		 * caller filtering with `search` silently got the newest unfiltered posts back.
+		 */
+		$search = '';
+		if ( isset( $args['s'] ) ) {
+			$search = sanitize_text_field( (string) $args['s'] );
+		} elseif ( isset( $args['search'] ) ) {
+			$search = sanitize_text_field( (string) $args['search'] );
+		}
+
 		$query_args = array(
 			'post_type'      => isset( $args['post_type'] ) ? sanitize_text_field( (string) $args['post_type'] ) : 'post',
 			'posts_per_page' => isset( $args['posts_per_page'] ) ? min( absint( $args['posts_per_page'] ), 100 ) : 10,
 			'orderby'        => isset( $args['orderby'] ) ? sanitize_text_field( (string) $args['orderby'] ) : 'date',
 			'order'          => $order,
+			/*
+			 * Deliberately hardcoded, NOT read from $args — this is a privacy control that keeps
+			 * drafts and private posts out of MCP responses. See RouterTest's
+			 * test_post_status_locked_to_publish / test_post_status_any_blocked. The tool's
+			 * `defaults` metadata also lists post_status, which wrongly implies it is
+			 * overridable; that advertisement is what needs correcting, not this line.
+			 */
 			'post_status'    => 'publish',
-			's'              => isset( $args['s'] ) ? sanitize_text_field( (string) $args['s'] ) : '',
+			's'              => $search,
 			'paged'          => isset( $args['paged'] ) ? absint( $args['paged'] ) : 1,
 			'category_name'  => isset( $args['category_name'] ) ? sanitize_text_field( (string) $args['category_name'] ) : '',
 			'tag'            => isset( $args['tag'] ) ? sanitize_text_field( (string) $args['tag'] ) : '',
@@ -1316,6 +1401,15 @@ final class Router {
 						'type'        => 'string',
 						'description' => __( 'URL slug (update_meta: optional)', 'bricks-mcp' ),
 					),
+					/*
+					 * Read by update_page_meta() but previously undeclared, so a live write path
+					 * (it sets or, when passed 0, deletes the post thumbnail) was undiscoverable
+					 * and callers had to reach for the separate media tool instead.
+					 */
+					'featured_image'      => array(
+						'type'        => 'integer',
+						'description' => __( 'Attachment ID to set as the featured image; pass 0 to remove it (update_meta: optional)', 'bricks-mcp' ),
+					),
 					'settings'            => array(
 						'type'        => 'object',
 						'description' => __( 'Settings key-value pairs (update_settings: required)', 'bricks-mcp' ),
@@ -1497,9 +1591,20 @@ final class Router {
 						'type'        => 'string',
 						'description' => __( 'Filter by template_bundle taxonomy slug (list: optional)', 'bricks-mcp' ),
 					),
-					'post_type'   => array(
+					/*
+					 * post_type was advertised but create_template() hardcodes 'bricks_template'
+					 * and never read it, so it is removed rather than left as a false promise.
+					 * `name` and `slug` replace it: both are read by handlers reachable from this
+					 * tool (create_tag/create_bundle require name; update writes slug) but were
+					 * undeclared, making those actions unsatisfiable from the advertised schema.
+					 */
+					'name'        => array(
 						'type'        => 'string',
-						'description' => __( 'Post type for the template (create: optional)', 'bricks-mcp' ),
+						'description' => __( 'Term name (create_tag, create_bundle: required)', 'bricks-mcp' ),
+					),
+					'slug'        => array(
+						'type'        => 'string',
+						'description' => __( 'URL slug (update: optional)', 'bricks-mcp' ),
 					),
 					'conditions'  => array(
 						'type'        => 'array',
@@ -1557,11 +1662,11 @@ final class Router {
 					),
 					'post_id'     => array(
 						'type'        => 'integer',
-						'description' => __( 'Post ID to resolve templates for (resolve: optional)', 'bricks-mcp' ),
+						'description' => __( 'Post ID to resolve templates for (resolve: required)', 'bricks-mcp' ),
 					),
 					'post_type'   => array(
 						'type'        => 'string',
-						'description' => __( 'Post type context for resolution (resolve: optional)', 'bricks-mcp' ),
+						'description' => __( 'Post type context for resolution. Currently ignored — resolution derives context from post_id. (resolve: optional)', 'bricks-mcp' ),
 					),
 				),
 				'required'   => array( 'action' ),
@@ -1870,7 +1975,7 @@ final class Router {
 		// Media consolidated tool (replaces search_unsplash, sideload_image, get_media_library, set_featured_image, remove_featured_image, get_image_element_settings).
 		$this->register_tool(
 			'media',
-			__( "Manage images and media library.\n\nActions:\n- search_unsplash: Search Unsplash photos (requires: query; optional: per_page)\n- sideload: Download image from URL to media library (requires: url; optional: filename, alt_text)\n- list: Browse media library (optional: per_page, page, mime_type)\n- set_featured: Set featured image on post (requires: post_id, attachment_id)\n- remove_featured: Remove featured image from post (requires: post_id)\n- get_image_settings: Get Bricks image element settings format (optional: target)", 'bricks-mcp' ),
+			__( "Manage images and media library.\n\nActions:\n- search_unsplash: Search Unsplash photos (requires: query; optional: per_page)\n- sideload: Download image from URL to media library (requires: url; optional: filename, alt_text)\n- list: Browse media library (optional: per_page, page, mime_type)\n- set_featured: Set featured image on post (requires: post_id, attachment_id)\n- remove_featured: Remove featured image from post (requires: post_id)\n- get_image_settings: Get Bricks image element settings format (requires: attachment_id, target)", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
@@ -1895,13 +2000,35 @@ final class Router {
 						'type'        => 'string',
 						'description' => __( 'Alt text for sideloaded image (sideload: optional)', 'bricks-mcp' ),
 					),
+					/*
+					 * The four keys below are read by handlers but were undeclared, so working
+					 * functionality was undiscoverable — including two side effects worth naming:
+					 * unsplash_id writes post meta and enables dedupe, and download_location
+					 * triggers an authenticated request to api.unsplash.com.
+					 */
+					'title'         => array(
+						'type'        => 'string',
+						'description' => __( 'Media library title for the sideloaded attachment (sideload: optional)', 'bricks-mcp' ),
+					),
+					'unsplash_id'   => array(
+						'type'        => 'string',
+						'description' => __( 'Unsplash photo ID. Stored as attachment meta and used for duplicate detection — a second sideload of the same ID returns the existing attachment instead of re-uploading. (sideload: optional)', 'bricks-mcp' ),
+					),
+					'download_location' => array(
+						'type'        => 'string',
+						'description' => __( 'Unsplash download_location URL. Triggers an authenticated download-tracking request to api.unsplash.com, as required by their API terms. (sideload: optional)', 'bricks-mcp' ),
+					),
+					'search'        => array(
+						'type'        => 'string',
+						'description' => __( 'Keyword filter for the media library (list: optional)', 'bricks-mcp' ),
+					),
 					'post_id'       => array(
 						'type'        => 'integer',
 						'description' => __( 'Post/page ID (set_featured, remove_featured: required)', 'bricks-mcp' ),
 					),
 					'attachment_id' => array(
 						'type'        => 'integer',
-						'description' => __( 'Attachment ID from media library (set_featured: required; get_image_settings: optional)', 'bricks-mcp' ),
+						'description' => __( 'Attachment ID from media library (set_featured, get_image_settings: required)', 'bricks-mcp' ),
 					),
 					'image_size'    => array(
 						'type'        => 'string',
@@ -1909,7 +2036,7 @@ final class Router {
 					),
 					'per_page'      => array(
 						'type'        => 'integer',
-						'description' => __( 'Results per page (search_unsplash, list: optional)', 'bricks-mcp' ),
+						'description' => __( 'Results per page (search_unsplash: optional, 1-30, default 5; list: optional)', 'bricks-mcp' ),
 					),
 					'page'          => array(
 						'type'        => 'integer',
@@ -2058,7 +2185,7 @@ final class Router {
 					'status'        => array(
 						'type'        => 'string',
 						'enum'        => array( 'publish', 'draft' ),
-						'description' => __( 'Template post status (scaffold_template: optional, default publish)', 'bricks-mcp' ),
+						'description' => __( 'Template post status (scaffold_template, scaffold_store: optional, default publish)', 'bricks-mcp' ),
 					),
 					'types'         => array(
 						'type'        => 'array',
@@ -4047,7 +4174,10 @@ final class Router {
 		}
 
 		if ( empty( $args['query'] ) ) {
-			return new \WP_Error( 'missing_query', __( 'query parameter is required.', 'bricks-mcp' ) );
+			// Name the parameter the caller was actually given: the schema exposes `search`,
+			// which tool_page() aliases to `query`. Reporting "query" sent callers hunting for
+			// a parameter that does not appear in the schema.
+			return new \WP_Error( 'missing_search', __( 'search parameter is required.', 'bricks-mcp' ) );
 		}
 
 		$search_query = sanitize_text_field( $args['query'] );
@@ -4058,6 +4188,9 @@ final class Router {
 			'post_type'      => sanitize_key( $post_type ),
 			'post_status'    => 'any',
 			'posts_per_page' => $per_page,
+			// `paged` is advertised for search but was never applied, so every page of results
+			// returned page 1 — silently plausible duplicate data rather than a visible error.
+			'paged'          => isset( $args['page'] ) ? max( 1, (int) $args['page'] ) : 1,
 			's'              => $search_query,
 			'meta_query'     => array( // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
 				array(
@@ -4289,8 +4422,23 @@ final class Router {
 			return new \WP_Error( 'missing_post_id', __( 'post_id is required. Use list_pages to find valid post IDs.', 'bricks-mcp' ) );
 		}
 
+		/*
+		 * Accept the documented `element` object as a source for name/settings/label. The schema
+		 * describes it as "Element object with name and optional settings (add: used as source
+		 * for element data)", but nothing ever read $args['element'] — so a caller following the
+		 * schema got a contradictory missing_name error, and one passing both `name` and
+		 * `element` had the element's settings silently dropped.
+		 */
+		if ( isset( $args['element'] ) && is_array( $args['element'] ) ) {
+			foreach ( array( 'name', 'settings', 'label' ) as $key ) {
+				if ( isset( $args['element'][ $key ] ) && ! isset( $args[ $key ] ) ) {
+					$args[ $key ] = $args['element'][ $key ];
+				}
+			}
+		}
+
 		if ( empty( $args['name'] ) ) {
-			return new \WP_Error( 'missing_name', __( 'name is required. Provide the Bricks element type (e.g. heading, container, section).', 'bricks-mcp' ) );
+			return new \WP_Error( 'missing_name', __( 'name is required. Provide the Bricks element type (e.g. heading, container, section), either directly or as element.name.', 'bricks-mcp' ) );
 		}
 
 		$post_id   = (int) $args['post_id'];
@@ -5047,6 +5195,21 @@ final class Router {
 			$args['category_id'] = $args['scale_id'];
 		}
 
+		/*
+		 * Flatten the documented `settings` wrapper onto the flat params the handlers actually
+		 * read. The schema states create "requires: name, settings" and describes prefix/steps
+		 * as needed only "if not inside settings" — but nothing ever read $args['settings'],
+		 * so following the documented contract failed with missing_prefix/missing_steps while
+		 * the settings payload was discarded. Same flattening shape as tool_color_palette().
+		 */
+		if ( isset( $args['settings'] ) && is_array( $args['settings'] ) ) {
+			foreach ( $args['settings'] as $k => $v ) {
+				if ( ! isset( $args[ $k ] ) ) {
+					$args[ $k ] = $v;
+				}
+			}
+		}
+
 		return match ( $action ) {
 			'list'   => $this->tool_get_typography_scales( $args ),
 			'create' => $this->tool_create_typography_scale( $args ),
@@ -5548,6 +5711,20 @@ final class Router {
 			return $new_template_id;
 		}
 
+		/*
+		 * Apply the requested title. The schema documents `title` as "duplicate: optional" but
+		 * duplicate_template() takes no title, so the copy silently kept its auto-generated
+		 * "... (Copy)" name and the caller's title was discarded.
+		 */
+		if ( ! empty( $args['title'] ) && is_string( $args['title'] ) ) {
+			wp_update_post(
+				array(
+					'ID'         => $new_template_id,
+					'post_title' => sanitize_text_field( $args['title'] ),
+				)
+			);
+		}
+
 		$template_data = $this->bricks_service->get_template_content_data( $new_template_id );
 
 		if ( is_wp_error( $template_data ) ) {
@@ -5602,7 +5779,18 @@ final class Router {
 			return $bricks_error;
 		}
 
-		$search   = isset( $args['search'] ) ? sanitize_text_field( $args['search'] ) : '';
+		/*
+		 * `class_name` is documented as a list filter ("list filter: optional") but was only
+		 * read by update/delete/apply/remove, so list returned the entire class set while
+		 * reporting success — a caller could reasonably read that as "the class matched".
+		 * It maps onto the same substring filter as `search`, which is explicit here.
+		 */
+		$search = isset( $args['search'] ) ? sanitize_text_field( $args['search'] ) : '';
+
+		if ( '' === $search && isset( $args['class_name'] ) && is_string( $args['class_name'] ) ) {
+			$search = sanitize_text_field( $args['class_name'] );
+		}
+
 		$category = isset( $args['category'] ) ? sanitize_text_field( $args['category'] ) : '';
 		$classes  = $this->bricks_service->get_global_classes( $search, $category );
 
@@ -6766,7 +6954,8 @@ final class Router {
 			$args['label'] ?? null,
 			$args['settings'] ?? null,
 			isset( $args['conditions'] ) ? $args['conditions'] : null,
-			! empty( $args['replace_section'] )
+			! empty( $args['replace_section'] ),
+			isset( $args['active'] ) ? (bool) $args['active'] : null
 		);
 
 		if ( is_wp_error( $result ) ) {
@@ -7095,7 +7284,8 @@ final class Router {
 			$args['name'],
 			$args['raw'] ?? '',
 			$args['parent_color_id'] ?? $args['parent'] ?? '',
-			$args['utility_classes'] ?? array()
+			$args['utility_classes'] ?? array(),
+			isset( $args['position'] ) ? (int) $args['position'] : null
 		);
 
 		if ( is_wp_error( $result ) ) {
@@ -7601,7 +7791,10 @@ final class Router {
 			);
 		}
 
-		return $this->media_service->search_photos( $args['query'] );
+		return $this->media_service->search_photos(
+			$args['query'],
+			isset( $args['per_page'] ) ? (int) $args['per_page'] : 5
+		);
 	}
 
 	/**
@@ -7629,7 +7822,9 @@ final class Router {
 		$unsplash_id       = isset( $args['unsplash_id'] ) && is_string( $args['unsplash_id'] ) ? $args['unsplash_id'] : null;
 		$download_location = isset( $args['download_location'] ) && is_string( $args['download_location'] ) ? $args['download_location'] : null;
 
-		return $this->media_service->sideload_from_url( $url, $alt_text, $title, $unsplash_id, $download_location );
+		$filename = isset( $args['filename'] ) && is_string( $args['filename'] ) ? $args['filename'] : '';
+
+		return $this->media_service->sideload_from_url( $url, $alt_text, $title, $unsplash_id, $download_location, $filename );
 	}
 
 	/**
@@ -8456,7 +8651,16 @@ final class Router {
 			}
 		}
 
-		$elements[] = $instance_element;
+		/*
+		 * Honour `position` at root level too. It was only consumed inside the non-root branch,
+		 * so instantiating at root with position:0 reported success and appended the instance
+		 * last. Root-level ordering is the element's index in the flat array.
+		 */
+		if ( '0' === $parent_id && null !== $position && $position >= 0 && $position < count( $elements ) ) {
+			array_splice( $elements, $position, 0, array( $instance_element ) );
+		} else {
+			$elements[] = $instance_element;
+		}
 
 		$save_result = $this->bricks_service->save_elements( $post_id, $elements );
 		if ( is_wp_error( $save_result ) ) {

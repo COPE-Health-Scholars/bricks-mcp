@@ -40,10 +40,13 @@ class MediaService {
 	/**
 	 * Search Unsplash photos using the Bricks-stored API key.
 	 *
-	 * @param string $query Search query for photos.
+	 * @param string $query    Search query for photos.
+	 * @param int    $per_page Results to request. Clamped to Unsplash's 1-30 range. The schema
+	 *                         advertised this but it was hardcoded to 5 and the caller's value
+	 *                         discarded.
 	 * @return array{total: int, results: array}|\WP_Error Search results or error.
 	 */
-	public function search_photos( string $query ): array|\WP_Error {
+	public function search_photos( string $query, int $per_page = 5 ): array|\WP_Error {
 		$api_key = $this->get_unsplash_api_key();
 		if ( empty( $api_key ) ) {
 			return new \WP_Error(
@@ -52,11 +55,14 @@ class MediaService {
 			);
 		}
 
+		// Unsplash caps per_page at 30; clamp rather than forwarding an out-of-range value.
+		$per_page = max( 1, min( 30, $per_page ) );
+
 		$response = wp_remote_get(
 			add_query_arg(
 				array(
 					'query'    => $query,
-					'per_page' => 5,
+					'per_page' => $per_page,
 				),
 				self::UNSPLASH_API_URL
 			),
@@ -121,6 +127,8 @@ class MediaService {
 	 * @param string      $title             Title for the media library entry.
 	 * @param string|null $unsplash_id       Unsplash photo ID for duplicate detection.
 	 * @param string|null $download_location Unsplash download_location URL for tracking.
+	 * @param string      $filename          Override the stored filename. Empty derives it from
+	 *                                       the URL basename.
 	 * @return array{attachment_id: int, url: string, title: string, alt_text: string, mime_type: string, duplicate: bool, bricks_image_object: array}|\WP_Error Sideload result or error.
 	 */
 	public function sideload_from_url(
@@ -128,7 +136,8 @@ class MediaService {
 		string $alt_text = '',
 		string $title = '',
 		?string $unsplash_id = null,
-		?string $download_location = null
+		?string $download_location = null,
+		string $filename = ''
 	): array|\WP_Error {
 		// Validate URL scheme — only HTTP(S) allowed to prevent SSRF.
 		$scheme = wp_parse_url( $url, PHP_URL_SCHEME );
@@ -169,11 +178,24 @@ class MediaService {
 			return $tmp;
 		}
 
-		// Build clean filename: strip query string, sanitize.
-		$clean_url = preg_replace( '/\?.*/', '', $url );
-		$filename  = sanitize_file_name( wp_basename( $clean_url ) );
+		/*
+		 * Build clean filename. An explicit filename wins; the tool schema advertised one as
+		 * "Filename for sideloaded image (sideload: optional)" but nothing read it, so uploads
+		 * always landed under the remote URL's basename.
+		 */
+		if ( '' !== $filename ) {
+			$filename = sanitize_file_name( wp_basename( $filename ) );
+		}
+
+		if ( '' === $filename ) {
+			$clean_url = preg_replace( '/\?.*/', '', $url );
+			$filename  = sanitize_file_name( wp_basename( $clean_url ) );
+		}
+
 		if ( empty( pathinfo( $filename, PATHINFO_EXTENSION ) ) ) {
-			$filename .= '.jpg';
+			// Preserve the source extension when the override omitted one.
+			$source_ext = pathinfo( (string) preg_replace( '/\?.*/', '', $url ), PATHINFO_EXTENSION );
+			$filename  .= '' !== $source_ext ? '.' . sanitize_file_name( $source_ext ) : '.jpg';
 		}
 
 		$file_array = array(

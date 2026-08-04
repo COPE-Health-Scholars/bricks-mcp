@@ -159,6 +159,7 @@ if ( ! function_exists( 'bricks_mcp_test_reset_posts' ) ) {
 	function bricks_mcp_test_reset_posts(): void {
 		$GLOBALS['_bricks_mcp_test_posts']        = [];
 		$GLOBALS['_bricks_mcp_test_meta']         = [];
+		$GLOBALS['_bricks_mcp_test_terms']        = [];
 		$GLOBALS['_bricks_mcp_test_next_post_id'] = 1000;
 	}
 }
@@ -169,11 +170,17 @@ if ( ! function_exists( 'wp_insert_post' ) ) {
 
 		$GLOBALS['_bricks_mcp_test_posts'][ $id ] = array_merge(
 			[
-				'ID'          => $id,
-				'post_type'   => 'post',
-				'post_title'  => '',
-				'post_status' => 'publish',
-				'post_name'   => '',
+				'ID'           => $id,
+				'post_type'    => 'post',
+				'post_title'   => '',
+				'post_status'  => 'publish',
+				'post_name'    => '',
+				// Present so code copying a post (duplicate_page) can read them without notices.
+				'post_content' => '',
+				'post_excerpt' => '',
+				'post_author'  => 1,
+				'post_parent'  => 0,
+				'menu_order'   => 0,
 			],
 			$postarr,
 			[ 'ID' => $id ]
@@ -212,7 +219,9 @@ if ( ! function_exists( 'get_post_meta' ) ) {
 		$all = $GLOBALS['_bricks_mcp_test_meta'][ $post_id ] ?? [];
 
 		if ( '' === $key ) {
-			return $all;
+			// WordPress returns [ key => [ value, ... ] ] when no key is given. Callers such as
+			// duplicate_page() iterate the inner arrays, so the shape has to match.
+			return array_map( static fn( $value ) => [ $value ], $all );
 		}
 		if ( ! array_key_exists( $key, $all ) ) {
 			return $single ? '' : [];
@@ -253,6 +262,28 @@ if ( ! function_exists( 'delete_post_meta' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_update_post' ) ) {
+	function wp_update_post( array $postarr, bool $wp_error = false ): int {
+		$id = (int) ( $postarr['ID'] ?? 0 );
+		if ( ! isset( $GLOBALS['_bricks_mcp_test_posts'][ $id ] ) ) {
+			return 0;
+		}
+		$GLOBALS['_bricks_mcp_test_posts'][ $id ] = array_merge(
+			$GLOBALS['_bricks_mcp_test_posts'][ $id ],
+			$postarr
+		);
+		return $id;
+	}
+}
+
+if ( ! function_exists( 'wp_set_object_terms' ) ) {
+	function wp_set_object_terms( int $object_id, mixed $terms, string $taxonomy, bool $append = false ): array {
+		$terms                                                            = is_array( $terms ) ? $terms : array( $terms );
+		$GLOBALS['_bricks_mcp_test_terms'][ $object_id ][ $taxonomy ]      = $terms;
+		return $terms;
+	}
+}
+
 if ( ! function_exists( 'wp_cache_delete' ) ) {
 	function wp_cache_delete( mixed $key, string $group = '' ): bool {
 		unset( $GLOBALS['_bricks_mcp_test_cache'][ "{$group}:{$key}" ] );
@@ -275,6 +306,55 @@ if ( ! function_exists( '_x' ) ) {
 if ( ! function_exists( 'esc_html__' ) ) {
 	function esc_html__( string $text, string $domain = 'default' ): string {
 		return $text;
+	}
+}
+
+if ( ! function_exists( 'maybe_unserialize' ) ) {
+	function maybe_unserialize( mixed $data ): mixed {
+		if ( is_string( $data ) ) {
+			$trimmed = trim( $data );
+			if ( '' !== $trimmed && preg_match( '/^[aOsbdiN];?/', $trimmed ) ) {
+				$result = @unserialize( $trimmed ); // phpcs:ignore
+				if ( false !== $result || 'b:0;' === $trimmed ) {
+					return $result;
+				}
+			}
+		}
+		return $data;
+	}
+}
+
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	function wp_strip_all_tags( string $text, bool $remove_breaks = false ): string {
+		$text = preg_replace( '@<(script|style)[^>]*?>.*?</\1>@si', '', $text ) ?? '';
+		$text = strip_tags( $text );
+		return $remove_breaks ? trim( preg_replace( '/[
+	 ]+/', ' ', $text ) ?? '' ) : trim( $text );
+	}
+}
+
+if ( ! function_exists( 'wp_kses_post' ) ) {
+	function wp_kses_post( string $data ): string {
+		// Tests only need a pass-through that keeps benign markup intact.
+		return $data;
+	}
+}
+
+if ( ! function_exists( 'sanitize_textarea_field' ) ) {
+	function sanitize_textarea_field( string $str ): string {
+		return trim( strip_tags( $str ) );
+	}
+}
+
+if ( ! function_exists( 'sanitize_hex_color' ) ) {
+	function sanitize_hex_color( string $color ): ?string {
+		return preg_match( '/^#([A-Fa-f0-9]{3}){1,2}$/', $color ) ? $color : null;
+	}
+}
+
+if ( ! function_exists( 'sanitize_file_name' ) ) {
+	function sanitize_file_name( string $filename ): string {
+		return preg_replace( '/[^A-Za-z0-9._-]/', '-', $filename ) ?? '';
 	}
 }
 
