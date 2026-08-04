@@ -1508,7 +1508,9 @@ Use `template:import` with a `template_data` object containing at minimum:
 
 Optional fields: `templateType` (defaults to "section"), `pageSettings`, `templateSettings`, `globalClasses`.
 
-Element IDs are automatically regenerated on import to prevent collisions with existing content. If `globalClasses` are included, they are merged by name: existing classes on the target site are preserved, only new classes are added.
+Element IDs are **preserved**, not regenerated: a native flat element array is stored as given. This is usually what you want — a generator that mints its own IDs will find the same IDs on the server afterwards, which is what makes a later targeted `element:bulk_update` addressable. It also means importing the same content twice produces two templates holding the same element IDs; that is harmless across separate posts, but never merge both into one post. If `globalClasses` are included, they are merged by name: existing classes on the target site are preserved, only new classes are added.
+
+The element tree is structurally validated before the template post is created, so a payload with broken parent/children linkage is rejected without leaving an empty template behind.
 
 Import always creates a new published template. It never overwrites existing templates. Import requires a license (write operation).
 
@@ -1518,13 +1520,40 @@ Use `template:import_url` with a `url` pointing to a public URL that returns val
 
 Import from URL requires a license (write operation).
 
+### Putting a Template's Content on a Page
+
+`template:import` and `template:import_url` create a **template**. To get that content onto a
+page, use `content:apply_template` (also `page:apply_template`) with `post_id` and `template_id`.
+Both posts are already in the database, so no element payload crosses the wire — this is the
+server-side equivalent of the builder's "Insert Template", and the reason it exists is that
+re-sending a large element array through a tool call is the single most expensive way to deploy.
+
+- `mode: "replace"` (default) — the page's current elements are discarded. The response reports
+  `replaced_element_count` so you can see what was thrown away.
+- `mode: "append"` / `"prepend"` — the template's roots are added around the existing content.
+- Element IDs are preserved unless they would collide with elements already on the target, in
+  which case they are rewritten and `ids_regenerated: true` comes back. Pass
+  `regenerate_ids: true` to force a rewrite, or `false` to be refused rather than have IDs
+  rewritten silently.
+- If an old ID was also referenced from inside settings — a `#brxe-{id}` selector in
+  `_cssCustom`, or a third-party element naming another element — a rewrite cannot follow that
+  reference, and the response warns with the affected IDs. Prefer custom classes over
+  `#brxe-{id}` selectors in content you intend to transport.
+
+Unlike the builder's Insert Template, this does **not** renumber IDs by default. That is
+deliberate: preserved IDs are what let a generator diff its own output against the live page
+later and patch only what differs.
+
 ### Cross-Site Template Workflow
 
 1. **Export** on source site: `template:export` with `template_id` and `include_classes: true`
 2. **Copy** the JSON response
 3. **Import** on target site: `template:import` with the copied JSON as `template_data`
+4. **Apply** to the destination page: `content:apply_template` with `post_id` and the new
+   `template_id`
 
-Alternatively, host the exported JSON at a public URL and use `template:import_url` on the target site.
+Alternatively, host the exported JSON at a public URL and use `template:import_url` on the target
+site — that transfers the payload server-side, so steps 2–3 cost nothing in context.
 
 ### Global Class Export/Import
 
@@ -1566,7 +1595,7 @@ Export is read-only (no license). Import requires a license (write operation).
 
 **Bricks:** `bricks:enable`, `bricks:disable`, `bricks:get_settings`, `bricks:get_breakpoints`, `bricks:get_element_schemas`, `bricks:get_dynamic_tags`, `bricks:get_query_types`, `bricks:get_form_schema`, `bricks:get_interaction_schema`, `bricks:get_component_schema`, `bricks:get_popup_schema`
 
-**Pages:** `page:list`, `page:search`, `page:get`, `page:create`, `page:update_content`, `page:update_meta`, `page:delete`, `page:duplicate`
+**Pages:** `page:list`, `page:search`, `page:get`, `page:create`, `page:update_content`, `page:update_meta`, `page:delete`, `page:duplicate`, `page:apply_template`
 
 **Elements:** `element:add`, `element:update`, `element:remove`, `element:get_conditions`, `element:set_conditions` [license]
 
@@ -1598,7 +1627,8 @@ Export is read-only (no license). Import requires a license (write operation).
 14. **Slot content lives in the page array, not the component definition** — slot filler elements are stored as regular elements in the page's flat array with `parent = instance_id`. The component definition only contains the slot placeholder element (`name: "slot"`).
 15. **Popup triggers are NOT popup settings** — triggers use `_interactions` on elements (click, scroll, exit intent). `_bricks_template_settings` only stores display behavior (close, backdrop, sizing, limits). These are separate systems managed by different tools.
 16. **`toggle-mode` needs dark mode colors** — The toggle element only works if dark mode variants are configured in the Bricks color manager. Without them, the button renders but does nothing.
-17. **Builder paste/import behavior settings** — `builderHtmlCssConverter` controls HTML/CSS paste conversion (`confirm`|`enabled`|`disabled`), `builderGlobalClassesImport` controls global class auto-import on paste (`confirm`|`enabled`|`disabled`). Both default to `confirm`. Read via `bricks:get_settings` with `category: builder`.
+17. **Check `css_file` after every write** — Bricks' "External Files" CSS mode serves a static `post-{id}.min.css`, so a style edit only reaches the frontend once that file is rewritten. Every write returns the file it wrote; a `null` `css_file` on a post that should have styles means the frontend is still serving the old stylesheet, and the accompanying `css_note` says what to do. `null` is expected only when the post genuinely produces no CSS.
+18. **Builder paste/import behavior settings** — `builderHtmlCssConverter` controls HTML/CSS paste conversion (`confirm`|`enabled`|`disabled`), `builderGlobalClassesImport` controls global class auto-import on paste (`confirm`|`enabled`|`disabled`). Both default to `confirm`. Read via `bricks:get_settings` with `category: builder`.
 
 ## Connection Troubleshooting
 

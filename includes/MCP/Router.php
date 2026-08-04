@@ -249,9 +249,14 @@ final class Router {
 			array( $this, 'tool_wordpress' )
 		);
 
+		/*
+		 * This is the consolidated tool that tools/list actually exposes, so its description is
+		 * the only contract most callers ever see. It aggregates the page, element and core-read
+		 * dispatchers; the action list below has to stay in sync with all three.
+		 */
 		$this->register_tool(
 			'content',
-			__( 'Manage WordPress and Bricks content for a given site; requires an action and validates target-specific inputs.', 'bricks-mcp' ),
+			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view)\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
 			$this->get_content_tool_schema(),
 			array( $this, 'tool_content' )
 		);
@@ -287,8 +292,8 @@ final class Router {
 		array $output_schema = array(),
 		array $defaults = array()
 	): void {
-		$description   = $this->get_normalized_tool_description( $name, $description );
-		$input_schema  = $this->inject_response_format_property( $input_schema );
+		$description  = $this->compose_tool_description( $name, $description );
+		$input_schema = $this->inject_response_format_property( $input_schema );
 
 		// Auto-populate v2.0 metadata when callers use the legacy 4-arg signature.
 		// This ensures every tool exposes annotations, outputSchema, and defaults
@@ -487,11 +492,34 @@ final class Router {
 	}
 
 	/**
-	 * Normalize tool descriptions to the action + target + constraint format.
+	 * Build the description a caller actually receives: normalized summary plus action detail.
 	 *
 	 * @param string $name        Tool name.
 	 * @param string $description Existing description.
 	 * @return string
+	 */
+	private function compose_tool_description( string $name, string $description ): string {
+		$normalized = $this->get_normalized_tool_description( $name, $description );
+
+		/*
+		 * Keep the normalized one-sentence lede, then restore the per-action parameter contract
+		 * underneath it. Replacing the description outright meant the only documentation of which
+		 * parameters each action reads never reached a caller - which is precisely why schema and
+		 * handler could drift apart unnoticed for so long. Callers now get both.
+		 */
+		if ( $normalized === $description || '' === trim( $description ) ) {
+			return $normalized;
+		}
+
+		return $normalized . "\n\n" . $description;
+	}
+
+	/**
+	 * Normalize a tool's one-line summary.
+	 *
+	 * @param string $name        Tool name.
+	 * @param string $description Registered description.
+	 * @return string Normalized summary, or the original when the tool has no override.
 	 */
 	private function get_normalized_tool_description( string $name, string $description ): string {
 		return match ( $name ) {
@@ -619,7 +647,7 @@ final class Router {
 			'properties' => array(
 				'action'         => array(
 					'type'        => 'string',
-					'enum'        => array( 'get_posts', 'get_post', 'get_users', 'get_plugins', 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'get_settings', 'update_settings', 'get_seo', 'update_seo', 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ),
+					'enum'        => array( 'get_posts', 'get_post', 'get_users', 'get_plugins', 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo', 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ),
 					'description' => __( 'Action to perform.', 'bricks-mcp' ),
 				),
 				'post_id'        => array( 'type' => 'integer' ),
@@ -667,6 +695,13 @@ final class Router {
 				'conditions'     => array( 'type' => 'array' ),
 				'target_parent_id' => array( 'type' => 'string' ),
 				'updates'        => array( 'type' => 'array' ),
+				// apply_template: copies a template's content onto post_id server-side.
+				'template_id'         => array( 'type' => 'integer' ),
+				'mode'                => array(
+					'type' => 'string',
+					'enum' => array( 'replace', 'append', 'prepend' ),
+				),
+				'regenerate_ids'      => array( 'type' => 'boolean' ),
 			),
 			'required'   => array( 'action' ),
 		);
@@ -1346,18 +1381,31 @@ final class Router {
 		// Page consolidated tool (replaces list_pages, search_pages, get_bricks_content, create_bricks_page, update_bricks_content, update_page, delete_page, duplicate_page, get_page_settings, update_page_settings + SEO).
 		$this->register_tool(
 			'page',
-			__( "Manage pages and Bricks content.\n\nActions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search; optional: post_type, posts_per_page, paged)\n- get: Get page with Bricks element data (requires: post_id; optional: view)\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Update Bricks elements (requires: post_id, elements)\n- update_meta: Update page title/status (requires: post_id; optional: title, status, slug)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- get_settings: Get page settings (requires: post_id)\n- update_settings: Update page settings (requires: post_id, settings)\n- get_seo: Get SEO data from active plugin with audit (requires: post_id)\n- update_seo: Update SEO fields via active plugin (requires: post_id; optional: title, description, robots_noindex, robots_nofollow, canonical, og_title, og_description, og_image, twitter_title, twitter_description, twitter_image, focus_keyword)", 'bricks-mcp' ),
+			__( "Manage pages and Bricks content.\n\nActions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search; optional: post_type, posts_per_page, paged)\n- get: Get page with Bricks element data (requires: post_id; optional: view)\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Update Bricks elements (requires: post_id, elements)\n- update_meta: Update page title/status (requires: post_id; optional: title, status, slug)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, no element payload (requires: post_id, template_id; optional: mode, regenerate_ids)\n- get_settings: Get page settings (requires: post_id)\n- update_settings: Update page settings (requires: post_id, settings)\n- get_seo: Get SEO data from active plugin with audit (requires: post_id)\n- update_seo: Update SEO fields via active plugin (requires: post_id; optional: title, description, robots_noindex, robots_nofollow, canonical, og_title, og_description, og_image, twitter_title, twitter_description, twitter_image, focus_keyword)", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
 					'action'              => array(
 						'type'        => 'string',
-						'enum'        => array( 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'get_settings', 'update_settings', 'get_seo', 'update_seo' ),
+						'enum'        => array( 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo' ),
 						'description' => __( 'Action to perform', 'bricks-mcp' ),
 					),
 					'post_id'             => array(
 						'type'        => 'integer',
-						'description' => __( 'Post/page ID (get, update_content, update_meta, delete, duplicate, get_settings, update_settings, get_seo, update_seo: required)', 'bricks-mcp' ),
+						'description' => __( 'Post/page ID (get, update_content, update_meta, delete, duplicate, apply_template, get_settings, update_settings, get_seo, update_seo: required)', 'bricks-mcp' ),
+					),
+					'template_id'         => array(
+						'type'        => 'integer',
+						'description' => __( 'Source bricks_template post ID to copy content from (apply_template: required)', 'bricks-mcp' ),
+					),
+					'mode'                => array(
+						'type'        => 'string',
+						'enum'        => array( 'replace', 'append', 'prepend' ),
+						'description' => __( 'How to combine template content with existing page content (apply_template: optional; default replace, which discards the page\'s current elements)', 'bricks-mcp' ),
+					),
+					'regenerate_ids'      => array(
+						'type'        => 'boolean',
+						'description' => __( 'Force new element IDs, or false to forbid rewriting them. Omit to decide automatically: IDs are preserved unless they collide with elements already on the target (apply_template: optional)', 'bricks-mcp' ),
 					),
 					'post_type'           => array(
 						'type'        => 'string',
@@ -1542,7 +1590,7 @@ final class Router {
 		// Template consolidated tool (replaces list_templates, get_template_content, create_template, update_template, delete_template, duplicate_template).
 		$this->register_tool(
 			'template',
-			__( 'Manage Bricks templates and targeting rules for a given site; requires an action and validates template-specific inputs.', 'bricks-mcp' ),
+			__( "Manage Bricks templates and their targeting rules.\n\nActions:\n- list: List templates (optional: type, status — pass \"any\" to include drafts, tag, bundle, tags, bundles) [read]\n- get: Get template with element content (requires: template_id) [read]\n- create: Create template (requires: title, type; optional: status, elements, tags, bundles, conditions)\n- update: Update template metadata (requires: template_id; optional: title, type, status, slug, tags, bundles)\n- delete: Delete template (requires: template_id)\n- duplicate: Duplicate template; conditions are not copied (requires: template_id; optional: title)\n- export: Export as Bricks-compatible JSON (requires: template_id; optional: include_classes) [read]\n- import: Import from JSON (requires: template_data with title and content)\n- import_url: Fetch and import from an HTTPS URL, server-side with no payload (requires: url)\n- get_popup_settings / set_popup_settings: Popup display settings (requires: template_id; set also settings)\n- get_types: List available condition types (no params) [read]\n- set: Set template conditions (requires: template_id, conditions)\n- resolve: Find which templates apply to a post (requires: post_id) [read]\n- list_tags / list_bundles: List taxonomy terms (no params) [read]\n- create_tag / create_bundle: Create a term (requires: name)\n- delete_tag / delete_bundle: Delete a term (requires: term_id)\n\nTo put a template's content on a page, use content:apply_template — it copies server-side and needs no element payload.", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
@@ -1702,7 +1750,7 @@ final class Router {
 
 		$this->register_tool(
 			'design',
-			__( 'Manage Bricks design tokens and style systems for a given site; requires a design domain and an action.', 'bricks-mcp' ),
+			__( "Every call needs a domain plus an action.\n\nDomains and their actions:\n- global_class: list, create, update, delete, apply, remove, batch_create, batch_delete, import_css, import_json, export, list_categories, create_category, delete_category\n- theme_style: list, get, create, update, delete\n- typography_scale: list, create, update, delete\n- color_palette: list, create, update, delete, add_color, update_color, delete_color\n- global_variable: list, create, update, delete, batch_create, batch_delete, search, create_category, update_category, delete_category\n- font: get_status, get_adobe_fonts, update_settings (global font settings only — custom font families have no CRUD here)\n\napply and remove on global_class write element settings, so they return css_file like any other element write.", 'bricks-mcp' ),
 			$this->get_design_tool_schema(),
 			array( $this, 'tool_design' )
 		);
@@ -2359,7 +2407,7 @@ final class Router {
 			return $this->tool_wordpress( $args );
 		}
 
-		if ( in_array( $action, array( 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'get_settings', 'update_settings', 'get_seo', 'update_seo' ), true ) ) {
+		if ( in_array( $action, array( 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo' ), true ) ) {
 			return $this->tool_page( $args );
 		}
 
@@ -3930,6 +3978,7 @@ final class Router {
 			'update_meta'     => $this->tool_update_page( $args ),
 			'delete'          => $this->tool_delete_page( $args ),
 			'duplicate'       => $this->tool_duplicate_page( $args ),
+			'apply_template'  => $this->tool_apply_template( $args ),
 			'get_settings'    => $this->tool_get_page_settings( $args ),
 			'update_settings' => $this->tool_update_page_settings( $args ),
 			'get_seo'         => $this->tool_get_page_seo( $args ),
@@ -3938,7 +3987,7 @@ final class Router {
 				'invalid_action',
 				sprintf(
 					/* translators: %s: Action name */
-					__( 'Invalid action "%s". Valid actions: list, search, get, create, update_content, update_meta, delete, duplicate, get_settings, update_settings, get_seo, update_seo', 'bricks-mcp' ),
+					__( 'Invalid action "%s". Valid actions: list, search, get, create, update_content, update_meta, delete, duplicate, apply_template, get_settings, update_settings, get_seo, update_seo', 'bricks-mcp' ),
 					$action
 				)
 			),
@@ -4246,7 +4295,7 @@ final class Router {
 		$post     = get_post( $post_id );
 		$elements = $this->bricks_service->get_elements( $post_id );
 
-		return array(
+		$result = array(
 			'post_id'       => $post_id,
 			'title'         => $post ? $post->post_title : $args['title'],
 			'status'        => $post ? $post->post_status : ( $args['status'] ?? 'draft' ),
@@ -4254,6 +4303,9 @@ final class Router {
 			'element_count' => count( $elements ),
 			'edit_url'      => admin_url( 'post.php?post=' . $post_id . '&action=edit' ),
 		);
+
+		// A page created without elements produces no CSS, so reporting on one would only mislead.
+		return array() === $elements ? $result : $this->with_css_file( $result );
 	}
 
 	/**
@@ -4297,21 +4349,12 @@ final class Router {
 
 		$metadata = $this->bricks_service->get_page_metadata( $post_id );
 
-		$css_file = $this->bricks_service->get_last_css_file();
-
-		return array(
-			'post_id'       => $post_id,
-			'element_count' => count( $elements ),
-			'metadata'      => $metadata,
-			/*
-			 * Proof that the frontend stylesheet was regenerated. Null means the styles were
-			 * saved but no CSS file was written - with Bricks' "External Files" CSS loading
-			 * that means the frontend is still serving the previous stylesheet.
-			 */
-			'css_file'      => $css_file,
-			'css_note'      => null === $css_file
-				? __( 'No CSS file was written. If Bricks "CSS loading method" is set to External Files, the frontend may still serve stale styles until a builder save or `wp bricks regenerate_assets`.', 'bricks-mcp' )
-				: null,
+		return $this->with_css_file(
+			array(
+				'post_id'       => $post_id,
+				'element_count' => count( $elements ),
+				'metadata'      => $metadata,
+			)
 		);
 	}
 
@@ -4397,13 +4440,90 @@ final class Router {
 		$post     = get_post( $new_post_id );
 		$elements = $this->bricks_service->get_elements( $new_post_id );
 
-		return array(
-			'post_id'       => $new_post_id,
-			'title'         => $post ? $post->post_title : '',
-			'status'        => $post ? $post->post_status : 'draft',
-			'permalink'     => get_permalink( $new_post_id ),
-			'element_count' => count( $elements ),
+		return $this->with_css_file(
+			array(
+				'post_id'       => $new_post_id,
+				'title'         => $post ? $post->post_title : '',
+				'status'        => $post ? $post->post_status : 'draft',
+				'permalink'     => get_permalink( $new_post_id ),
+				'element_count' => count( $elements ),
+			)
 		);
+	}
+
+	/**
+	 * Attach CSS-file evidence to a write result.
+	 *
+	 * Bricks' "External Files" CSS loading mode serves a static post-<id>.min.css, so a write
+	 * that reports success while that file is unchanged leaves the frontend showing the old
+	 * styles. Every write path therefore reports the file it wrote, and says so plainly when it
+	 * wrote none - callers should treat a null on a post that should have styles as a failure.
+	 *
+	 * @param array<string, mixed> $result Handler result to annotate.
+	 * @return array<string, mixed> Result with css_file and, when null, css_note.
+	 */
+	private function with_css_file( array $result ): array {
+		$css_file = $this->bricks_service->get_last_css_file();
+
+		$result['css_file'] = $css_file;
+
+		if ( null === $css_file ) {
+			$result['css_note'] = __( 'No CSS file was written. If Bricks "CSS loading method" is set to External Files, the frontend may still serve stale styles until a builder save or `wp bricks regenerate_assets`. This is expected when the post produces no CSS at all.', 'bricks-mcp' );
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Annotate a service write result with CSS-file evidence, passing errors through.
+	 *
+	 * @param array<string, mixed>|\WP_Error $result Service result.
+	 * @return array<string, mixed>|\WP_Error Annotated result, or the original error.
+	 */
+	private function write_result( array|\WP_Error $result ): array|\WP_Error {
+		return is_wp_error( $result ) ? $result : $this->with_css_file( $result );
+	}
+
+	/**
+	 * Tool: Apply a Bricks template's content to an existing page, server-side.
+	 *
+	 * The payload-free alternative to re-sending a generated element array: both posts are
+	 * already in the database, so only two IDs cross the wire.
+	 *
+	 * @param array<string, mixed> $args Tool arguments (requires: post_id, template_id; optional: mode, regenerate_ids).
+	 * @return array<string, mixed>|\WP_Error Apply summary or error.
+	 */
+	private function tool_apply_template( array $args ): array|\WP_Error {
+		$bricks_error = $this->require_bricks();
+		if ( null !== $bricks_error ) {
+			return $bricks_error;
+		}
+
+		if ( empty( $args['post_id'] ) ) {
+			return new \WP_Error( 'missing_post_id', __( 'post_id is required — the page that receives the template content. Use page:list to find valid post IDs.', 'bricks-mcp' ) );
+		}
+
+		if ( empty( $args['template_id'] ) ) {
+			return new \WP_Error( 'missing_template_id', __( 'template_id is required — the bricks_template to copy content from. Use template:list with status "any" to include drafts.', 'bricks-mcp' ) );
+		}
+
+		$mode = isset( $args['mode'] ) ? (string) $args['mode'] : 'replace';
+
+		// Distinguish "not passed" (decide by collision) from an explicit true/false.
+		$regenerate_ids = array_key_exists( 'regenerate_ids', $args ) ? (bool) $args['regenerate_ids'] : null;
+
+		$result = $this->bricks_service->apply_template(
+			(int) $args['template_id'],
+			(int) $args['post_id'],
+			$mode,
+			$regenerate_ids
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return $this->with_css_file( $result );
 	}
 
 	/**
@@ -4454,7 +4574,7 @@ final class Router {
 			$element['label'] = sanitize_text_field( $args['label'] );
 		}
 
-		return $this->bricks_service->add_element( $post_id, $element, $parent_id, $position );
+		return $this->write_result( $this->bricks_service->add_element( $post_id, $element, $parent_id, $position ) );
 	}
 
 	/**
@@ -4494,7 +4614,7 @@ final class Router {
 		$settings   = isset( $args['settings'] ) && is_array( $args['settings'] ) ? $args['settings'] : array();
 		$label      = $has_label ? sanitize_text_field( $args['label'] ) : null;
 
-		return $this->bricks_service->update_element( $post_id, $element_id, $settings, $label );
+		return $this->write_result( $this->bricks_service->update_element( $post_id, $element_id, $settings, $label ) );
 	}
 
 	/**
@@ -4520,7 +4640,7 @@ final class Router {
 		$post_id    = (int) $args['post_id'];
 		$element_id = sanitize_text_field( $args['element_id'] );
 
-		return $this->bricks_service->remove_element( $post_id, $element_id );
+		return $this->write_result( $this->bricks_service->remove_element( $post_id, $element_id ) );
 	}
 
 	/**
@@ -4542,7 +4662,7 @@ final class Router {
 			return new \WP_Error( 'missing_element_id', __( 'element_id is required.', 'bricks-mcp' ) );
 		}
 
-		return $this->bricks_service->move_element( $post_id, $element_id, $target_parent_id, $position );
+		return $this->write_result( $this->bricks_service->move_element( $post_id, $element_id, $target_parent_id, $position ) );
 	}
 
 	/**
@@ -4562,7 +4682,7 @@ final class Router {
 			return new \WP_Error( 'missing_updates', __( 'updates array is required with at least one {element_id, settings} object.', 'bricks-mcp' ) );
 		}
 
-		return $this->bricks_service->bulk_update_elements( $post_id, $updates );
+		return $this->write_result( $this->bricks_service->bulk_update_elements( $post_id, $updates ) );
 	}
 
 	/**
@@ -4815,10 +4935,17 @@ final class Router {
 			$elements[ $target_index ]['settings']['_conditions'] = $conditions;
 		}
 
-		// Save elements back to post meta.
-		$this->bricks_service->unhook_bricks_meta_filters();
-		update_post_meta( $post_id, BricksService::META_KEY, $elements );
-		$this->bricks_service->rehook_bricks_meta_filters();
+		/*
+		 * Save through save_elements() rather than writing META_KEY directly. The direct write
+		 * hardcoded the content meta key, so setting conditions on an element of a header or
+		 * footer template wrote to a key Bricks never reads, and it skipped the linkage check
+		 * and the write-verification read-back that every other element edit gets.
+		 */
+		$saved = $this->bricks_service->save_elements( $post_id, $elements );
+
+		if ( is_wp_error( $saved ) ) {
+			return $saved;
+		}
 
 		$result = array(
 			'post_id'        => $post_id,
@@ -4832,7 +4959,7 @@ final class Router {
 			$result['warnings'] = $warnings;
 		}
 
-		return $result;
+		return $this->with_css_file( $result );
 	}
 
 	/**
@@ -4965,7 +5092,7 @@ final class Router {
 			);
 		}
 
-		return $this->bricks_service->import_template( $template_data );
+		return $this->write_result( $this->bricks_service->import_template( $template_data ) );
 	}
 
 	/**
@@ -4984,7 +5111,7 @@ final class Router {
 			);
 		}
 
-		return $this->bricks_service->import_template_from_url( $url );
+		return $this->write_result( $this->bricks_service->import_template_from_url( $url ) );
 	}
 
 	/**
@@ -5568,7 +5695,7 @@ final class Router {
 
 		$post = get_post( $template_id );
 
-		return array_merge(
+		$result = array_merge(
 			$template_data,
 			array(
 				'status'    => $post ? $post->post_status : ( $args['status'] ?? 'publish' ),
@@ -5576,6 +5703,9 @@ final class Router {
 				'edit_url'  => admin_url( 'post.php?post=' . $template_id . '&action=edit' ),
 			)
 		);
+
+		// Only a template created with elements went through a save, so only that one has CSS.
+		return empty( $elements ) ? $result : $this->with_css_file( $result );
 	}
 
 	/**
@@ -5733,12 +5863,14 @@ final class Router {
 
 		$post = get_post( $new_template_id );
 
-		return array_merge(
-			$template_data,
-			array(
-				'status'    => $post ? $post->post_status : 'draft',
-				'permalink' => get_permalink( $new_template_id ),
-				'warning'   => __( 'Template conditions were not copied. Use set_template_conditions on the new template to configure where it should apply.', 'bricks-mcp' ),
+		return $this->with_css_file(
+			array_merge(
+				$template_data,
+				array(
+					'status'    => $post ? $post->post_status : 'draft',
+					'permalink' => get_permalink( $new_template_id ),
+					'warning'   => __( 'Template conditions were not copied. Use set_template_conditions on the new template to configure where it should apply.', 'bricks-mcp' ),
+				)
 			)
 		);
 	}
@@ -5851,12 +5983,14 @@ final class Router {
 			return $result;
 		}
 
-		return array(
-			'class_name' => $class['name'],
-			'class_id'   => $class['id'],
-			'styles'     => $class['styles'] ?? array(),
-			'applied_to' => $element_ids,
-			'post_id'    => $post_id,
+		return $this->with_css_file(
+			array(
+				'class_name' => $class['name'],
+				'class_id'   => $class['id'],
+				'styles'     => $class['styles'] ?? array(),
+				'applied_to' => $element_ids,
+				'post_id'    => $post_id,
+			)
 		);
 	}
 
@@ -6185,12 +6319,14 @@ final class Router {
 			return $result;
 		}
 
-		return array(
-			'class_name'   => $class['name'],
-			'class_id'     => $class['id'],
-			'styles'       => $class['styles'] ?? array(),
-			'removed_from' => $element_ids,
-			'post_id'      => $post_id,
+		return $this->with_css_file(
+			array(
+				'class_name'   => $class['name'],
+				'class_id'     => $class['id'],
+				'styles'       => $class['styles'] ?? array(),
+				'removed_from' => $element_ids,
+				'post_id'      => $post_id,
+			)
 		);
 	}
 
@@ -8413,8 +8549,18 @@ final class Router {
 		$label      = sanitize_text_field( $args['label'] );
 		$category   = isset( $args['category'] ) ? sanitize_text_field( $args['category'] ) : '';
 		$desc       = isset( $args['description'] ) ? sanitize_text_field( $args['description'] ) : '';
-		$elements   = $args['elements'];
 		$properties = isset( $args['properties'] ) && is_array( $args['properties'] ) ? $args['properties'] : array();
+
+		/*
+		 * Normalize before storing. Component elements were previously written to the option
+		 * exactly as received: a simplified nested payload was stored in a shape Bricks cannot
+		 * read, and nothing checked linkage.
+		 */
+		$elements = $this->bricks_service->normalize_elements( $args['elements'] );
+
+		if ( empty( $elements ) ) {
+			return new \WP_Error( 'invalid_elements', __( 'elements did not normalize to any Bricks elements. Provide a flat array of {id, name, parent, children, settings} objects, or a simplified nested tree of {name, settings, children}.', 'bricks-mcp' ) );
+		}
 
 		$components   = get_option( self::COMPONENTS_OPTION, array() );
 		$id_generator = new ElementIdGenerator();
@@ -8431,9 +8577,25 @@ final class Router {
 			}
 		}
 
-		// Set root element ID to match component ID.
+		/*
+		 * Bricks requires the root element's ID to equal the component ID. Assigning it directly
+		 * used to orphan the whole tree: every child still named the *old* root ID as its parent,
+		 * so the component stored a root with children that pointed nowhere. Remap instead, which
+		 * rewrites the parent references and the root's children list together.
+		 */
+		$root_id  = isset( $elements[0]['id'] ) ? (string) $elements[0]['id'] : '';
+		$elements = '' === $root_id || $root_id === $component_id
+			? $elements
+			: $this->bricks_service->remap_element_ids( $elements, array( $root_id => $component_id ) );
+
 		$elements[0]['id']     = $component_id;
 		$elements[0]['parent'] = 0;
+
+		$linkage = $this->bricks_service->validate_element_linkage( $elements );
+
+		if ( is_wp_error( $linkage ) ) {
+			return $linkage;
+		}
 
 		$new_component = array(
 			'id'          => $component_id,
@@ -8486,22 +8648,55 @@ final class Router {
 			);
 		}
 
+		/*
+		 * Normalize, re-root and validate replacement elements before touching the stored
+		 * component, so a malformed payload cannot half-overwrite a working definition. Same
+		 * linkage trap as create: the root ID must become the component ID, and every child's
+		 * parent reference has to follow it.
+		 */
+		$new_elements = null;
+
+		if ( array_key_exists( 'elements', $args ) ) {
+			if ( ! is_array( $args['elements'] ) || empty( $args['elements'] ) ) {
+				return new \WP_Error( 'invalid_elements', __( 'elements must be a non-empty array. Omit the key to leave the component\'s elements unchanged.', 'bricks-mcp' ) );
+			}
+
+			$new_elements = $this->bricks_service->normalize_elements( $args['elements'] );
+
+			if ( empty( $new_elements ) ) {
+				return new \WP_Error( 'invalid_elements', __( 'elements did not normalize to any Bricks elements. Provide a flat array of {id, name, parent, children, settings} objects, or a simplified nested tree of {name, settings, children}.', 'bricks-mcp' ) );
+			}
+
+			$root_id = isset( $new_elements[0]['id'] ) ? (string) $new_elements[0]['id'] : '';
+
+			if ( '' !== $root_id && $root_id !== $component_id ) {
+				$new_elements = $this->bricks_service->remap_element_ids( $new_elements, array( $root_id => $component_id ) );
+			}
+
+			$new_elements[0]['id']     = $component_id;
+			$new_elements[0]['parent'] = 0;
+
+			$linkage = $this->bricks_service->validate_element_linkage( $new_elements );
+
+			if ( is_wp_error( $linkage ) ) {
+				return $linkage;
+			}
+		}
+
 		// Merge allowed fields.
-		$allowed_fields = array( 'label', 'category', 'description', 'elements', 'properties' );
+		$allowed_fields = array( 'label', 'category', 'description', 'properties' );
 		foreach ( $allowed_fields as $field ) {
 			if ( array_key_exists( $field, $args ) ) {
-				if ( 'label' === $field || 'category' === $field || 'description' === $field ) {
-					$components[ $index ][ $field ] = sanitize_text_field( $args[ $field ] );
-				} else {
+				if ( 'properties' === $field ) {
 					$components[ $index ][ $field ] = $args[ $field ];
+				} else {
+					$components[ $index ][ $field ] = sanitize_text_field( $args[ $field ] );
 				}
 			}
 		}
 
-		// Enforce root element ID = component ID if elements were updated.
-		if ( isset( $args['elements'] ) && is_array( $args['elements'] ) && ! empty( $args['elements'] ) ) {
-			$components[ $index ]['elements'][0]['id']     = $component_id;
-			$components[ $index ]['elements'][0]['parent'] = 0;
+		if ( null !== $new_elements ) {
+			$components[ $index ]['elements'] = $new_elements;
 		}
 
 		update_option( self::COMPONENTS_OPTION, $components );
@@ -8667,13 +8862,15 @@ final class Router {
 			return $save_result;
 		}
 
-		return array(
-			'instantiated'    => true,
-			'instance_id'     => $instance_id,
-			'component_id'    => $component_id,
-			'component_label' => $component_label,
-			'post_id'         => $post_id,
-			'parent_id'       => $parent_id,
+		return $this->with_css_file(
+			array(
+				'instantiated'    => true,
+				'instance_id'     => $instance_id,
+				'component_id'    => $component_id,
+				'component_label' => $component_label,
+				'post_id'         => $post_id,
+				'parent_id'       => $parent_id,
+			)
 		);
 	}
 
@@ -8740,18 +8937,22 @@ final class Router {
 		// Re-find element for response.
 		foreach ( $elements as $el ) {
 			if ( $el['id'] === $instance_id ) {
-				return array(
-					'updated'     => true,
-					'instance_id' => $instance_id,
-					'properties'  => $el['properties'],
+				return $this->with_css_file(
+					array(
+						'updated'     => true,
+						'instance_id' => $instance_id,
+						'properties'  => $el['properties'],
+					)
 				);
 			}
 		}
 
-		return array(
-			'updated'     => true,
-			'instance_id' => $instance_id,
-			'properties'  => $args['properties'],
+		return $this->with_css_file(
+			array(
+				'updated'     => true,
+				'instance_id' => $instance_id,
+				'properties'  => $args['properties'],
+			)
 		);
 	}
 
@@ -8902,12 +9103,14 @@ final class Router {
 			return $save_result;
 		}
 
-		return array(
-			'filled'         => true,
-			'instance_id'    => $instance_id,
-			'slot_id'        => $slot_id,
-			'elements_added' => count( $slot_elements ),
-			'element_ids'    => $new_element_ids,
+		return $this->with_css_file(
+			array(
+				'filled'         => true,
+				'instance_id'    => $instance_id,
+				'slot_id'        => $slot_id,
+				'elements_added' => count( $slot_elements ),
+				'element_ids'    => $new_element_ids,
+			)
 		);
 	}
 
@@ -10297,7 +10500,7 @@ final class Router {
 			$result['condition_warning'] = 'Template created but condition assignment failed: ' . $condition_result->get_error_message();
 		}
 
-		return $result;
+		return $this->with_css_file( $result );
 	}
 
 	/**

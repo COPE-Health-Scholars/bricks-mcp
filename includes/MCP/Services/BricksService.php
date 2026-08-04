@@ -31,6 +31,15 @@ class BricksService {
 	private ElementNormalizer $normalizer;
 
 	/**
+	 * Element ID generator instance.
+	 *
+	 * Shared with the normalizer so IDs minted here cannot collide with IDs it mints.
+	 *
+	 * @var ElementIdGenerator
+	 */
+	private ElementIdGenerator $id_generator;
+
+	/**
 	 * Validation service instance.
 	 *
 	 * Optional — when set, validates element settings against Bricks schemas before saving.
@@ -45,7 +54,8 @@ class BricksService {
 	 * Initializes the element normalizer with an ID generator.
 	 */
 	public function __construct() {
-		$this->normalizer = new ElementNormalizer( new ElementIdGenerator() );
+		$this->id_generator = new ElementIdGenerator();
+		$this->normalizer   = new ElementNormalizer( $this->id_generator );
 	}
 
 	/**
@@ -118,6 +128,134 @@ class BricksService {
 	 */
 	public function normalize_elements( array $input, array $existing_elements = [] ): array {
 		return $this->normalizer->normalize( $input, $existing_elements );
+	}
+
+	/**
+	 * Rewrite element IDs across a flat element array, preserving dual linkage.
+	 *
+	 * Bricks links elements twice: a child names its `parent`, and the parent lists the child
+	 * in `children`. Renaming an `id` without rewriting both references leaves a tree that
+	 * validate_element_linkage() rejects - and that Bricks renders as an empty container.
+	 *
+	 * Root elements use parent 0 (int) or '0' (string); that marker is never remapped.
+	 * IDs absent from the map are left untouched, so a partial map is safe.
+	 *
+	 * Element *settings* are deliberately not rewritten. Bricks stores no element references
+	 * in settings, but third-party elements sometimes do (a slider control naming its slider),
+	 * and rewriting arbitrary settings strings would corrupt content that merely looks like an
+	 * ID. Use find_settings_id_references() to detect that case and report it.
+	 *
+	 * @param array<int, array<string, mixed>> $elements Flat element array.
+	 * @param array<string, string>            $id_map   old ID => new ID.
+	 * @return array<int, array<string, mixed>> Elements with IDs and linkage rewritten.
+	 */
+	public function remap_element_ids( array $elements, array $id_map ): array {
+		if ( empty( $id_map ) ) {
+			return $elements;
+		}
+
+		foreach ( $elements as $index => $element ) {
+			if ( ! is_array( $element ) ) {
+				continue;
+			}
+
+			$old_id = isset( $element['id'] ) ? (string) $element['id'] : '';
+			if ( '' !== $old_id && isset( $id_map[ $old_id ] ) ) {
+				$elements[ $index ]['id'] = $id_map[ $old_id ];
+			}
+
+			$parent = isset( $element['parent'] ) ? (string) $element['parent'] : '0';
+			if ( '' !== $parent && '0' !== $parent && isset( $id_map[ $parent ] ) ) {
+				$elements[ $index ]['parent'] = $id_map[ $parent ];
+			}
+
+			if ( isset( $element['children'] ) && is_array( $element['children'] ) ) {
+				$elements[ $index ]['children'] = array_values(
+					array_map(
+						static fn( $child_id ) => $id_map[ (string) $child_id ] ?? $child_id,
+						$element['children']
+					)
+				);
+			}
+		}
+
+		return $elements;
+	}
+
+	/**
+	 * Mint a fresh ID for every element in a flat array, preserving linkage.
+	 *
+	 * @param array<int, array<string, mixed>> $elements       Flat element array.
+	 * @param array<int, array<string, mixed>> $avoid_elements Elements whose IDs must not be reused.
+	 * @return array{elements: array<int, array<string, mixed>>, id_map: array<string, string>} Remapped elements and the map applied.
+	 */
+	public function regenerate_element_ids( array $elements, array $avoid_elements = [] ): array {
+		$taken = [];
+		foreach ( $avoid_elements as $element ) {
+			if ( is_array( $element ) && isset( $element['id'] ) ) {
+				$taken[] = [ 'id' => (string) $element['id'] ];
+			}
+		}
+
+		$id_map = [];
+		foreach ( $elements as $element ) {
+			if ( ! is_array( $element ) || ! isset( $element['id'] ) ) {
+				continue;
+			}
+
+			$old_id = (string) $element['id'];
+			if ( isset( $id_map[ $old_id ] ) ) {
+				continue;
+			}
+
+			$new_id            = $this->id_generator->generate_unique( $taken );
+			$id_map[ $old_id ] = $new_id;
+			$taken[]           = [ 'id' => $new_id ];
+		}
+
+		return [
+			'elements' => $this->remap_element_ids( $elements, $id_map ),
+			'id_map'   => $id_map,
+		];
+	}
+
+	/**
+	 * Find IDs that are referenced from inside element settings.
+	 *
+	 * Used to warn when an ID rewrite would break a reference remap_element_ids() cannot
+	 * safely follow - a `#brxe-<id>` selector baked into _cssCustom, or a third-party element
+	 * that targets another element by ID.
+	 *
+	 * @param array<int, array<string, mixed>> $elements Flat element array to scan.
+	 * @param array<int, string>               $ids      IDs to look for.
+	 * @return array<int, string> The subset of $ids that appear somewhere in settings.
+	 */
+	public function find_settings_id_references( array $elements, array $ids ): array {
+		if ( empty( $ids ) ) {
+			return [];
+		}
+
+		$settings_only = [];
+		foreach ( $elements as $element ) {
+			if ( is_array( $element ) && ! empty( $element['settings'] ) ) {
+				$settings_only[] = $element['settings'];
+			}
+		}
+
+		if ( empty( $settings_only ) ) {
+			return [];
+		}
+
+		$haystack = (string) wp_json_encode( $settings_only );
+		$found    = [];
+		foreach ( $ids as $id ) {
+			$id = (string) $id;
+			if ( '' !== $id && str_contains( $haystack, $id ) ) {
+				$found[] = $id;
+			}
+		}
+
+		return $found;
 	}
 
 	/**
@@ -2918,18 +3056,207 @@ class BricksService {
 			return $new_post_id;
 		}
 
-		// Copy all post meta.
-		$all_meta = get_post_meta( $post_id );
-		if ( is_array( $all_meta ) ) {
-			foreach ( $all_meta as $meta_key => $meta_values ) {
-				foreach ( $meta_values as $meta_value ) {
-					$unserialized = maybe_unserialize( $meta_value );
-					update_post_meta( $new_post_id, $meta_key, $unserialized );
+		/*
+		 * Copy all post meta. Bricks' sanitize/update_post_metadata filters reject element
+		 * writes made outside the builder, so they are unhooked here exactly as save_elements()
+		 * does - otherwise the copy can come back with no Bricks content at all. The source ID
+		 * is used to resolve which sanitize filter to remove, because the new post has no
+		 * _bricks_template_type yet (it arrives during this very loop).
+		 */
+		$this->last_css_file = null;
+		$this->unhook_bricks_meta_filters( $post_id );
+
+		try {
+			$all_meta = get_post_meta( $post_id );
+			if ( is_array( $all_meta ) ) {
+				foreach ( $all_meta as $meta_key => $meta_values ) {
+					foreach ( $meta_values as $meta_value ) {
+						$unserialized = maybe_unserialize( $meta_value );
+						update_post_meta( $new_post_id, $meta_key, $unserialized );
+					}
 				}
 			}
+
+			/*
+			 * The copy needs its own post-<id>.min.css. Nothing else writes it: this path never
+			 * reaches save_elements(), so without this the duplicate renders unstyled the moment
+			 * it is published - the same failure mode as the pre-fix programmatic save.
+			 */
+			$this->last_css_file = $this->trigger_css_regeneration( $new_post_id );
+		} finally {
+			$this->rehook_bricks_meta_filters( $post_id );
 		}
 
 		return $new_post_id;
+	}
+
+	/**
+	 * Apply a Bricks template's element content to an existing post.
+	 *
+	 * The server-side equivalent of the builder's "Insert Template", and the reason it exists:
+	 * without it, putting generated content on a page means pushing the entire element array
+	 * through a tool call. Here both posts already live in the database, so nothing is
+	 * transported - the content is copied in place and saved through save_elements(), which
+	 * validates linkage and regenerates the page's CSS file.
+	 *
+	 * Unlike the builder, IDs are preserved by default. That is deliberate: a generator that
+	 * mints deterministic IDs then finds the same IDs live, which makes later diff-and-patch
+	 * deploys addressable. IDs are only rewritten when they would collide with content already
+	 * on the target (append/prepend), or when the caller forces it.
+	 *
+	 * @param int       $template_id    Source bricks_template post ID.
+	 * @param int       $post_id        Target post ID (page, post, or another template).
+	 * @param string    $mode           'replace' (default), 'append', or 'prepend'.
+	 * @param bool|null $regenerate_ids True to force new IDs, false to forbid, null to decide by collision.
+	 * @return array<string, mixed>|\WP_Error Result summary or error.
+	 */
+	public function apply_template( int $template_id, int $post_id, string $mode = 'replace', ?bool $regenerate_ids = null ): array|\WP_Error {
+		if ( ! in_array( $mode, [ 'replace', 'append', 'prepend' ], true ) ) {
+			return new \WP_Error(
+				'invalid_mode',
+				__( 'mode must be one of: replace, append, prepend.', 'bricks-mcp' )
+			);
+		}
+
+		$source = get_post( $template_id );
+
+		if ( ! $source || 'bricks_template' !== $source->post_type ) {
+			return new \WP_Error(
+				'template_not_found',
+				sprintf(
+					/* translators: %d: Template ID */
+					__( 'Bricks template %d not found. Verify template_id is a bricks_template post; use template:list with status "any" to include drafts.', 'bricks-mcp' ),
+					$template_id
+				)
+			);
+		}
+
+		$target = get_post( $post_id );
+
+		if ( ! $target ) {
+			return new \WP_Error(
+				'post_not_found',
+				sprintf(
+					/* translators: %d: Post ID */
+					__( 'Post %d not found. Use page:list to find valid post IDs.', 'bricks-mcp' ),
+					$post_id
+				)
+			);
+		}
+
+		if ( $template_id === $post_id ) {
+			return new \WP_Error(
+				'invalid_target',
+				__( 'template_id and post_id must differ - a template cannot be applied to itself.', 'bricks-mcp' )
+			);
+		}
+
+		$incoming = $this->get_elements( $template_id );
+
+		if ( empty( $incoming ) ) {
+			return new \WP_Error(
+				'empty_template',
+				sprintf(
+					/* translators: %d: Template ID */
+					__( 'Template %d has no element content to apply. Header and footer templates store content under their own meta key; verify the template renders in the builder.', 'bricks-mcp' ),
+					$template_id
+				)
+			);
+		}
+
+		// Read the target's current content once: replace discards it, append/prepend build on it.
+		$current  = $this->get_elements( $post_id );
+		$existing = 'replace' === $mode ? [] : $current;
+
+		$existing_ids = array_values(
+			array_map(
+				static fn( array $el ) => (string) ( $el['id'] ?? '' ),
+				array_filter( $existing, 'is_array' )
+			)
+		);
+		$incoming_ids = array_values(
+			array_map(
+				static fn( array $el ) => (string) ( $el['id'] ?? '' ),
+				array_filter( $incoming, 'is_array' )
+			)
+		);
+		$collisions   = array_values( array_intersect( $incoming_ids, $existing_ids ) );
+
+		$warnings   = [];
+		$regenerate = true === $regenerate_ids || ( null === $regenerate_ids && ! empty( $collisions ) );
+
+		if ( ! $regenerate && ! empty( $collisions ) ) {
+			return new \WP_Error(
+				'element_id_collision',
+				sprintf(
+					/* translators: %1$d: Number of colliding IDs, %2$s: Comma-separated sample of colliding IDs */
+					__( '%1$d element ID(s) already exist on the target post (%2$s). Duplicate IDs break Bricks linkage. Omit regenerate_ids to rewrite them automatically, or use mode "replace".', 'bricks-mcp' ),
+					count( $collisions ),
+					implode( ', ', array_slice( $collisions, 0, 5 ) )
+				)
+			);
+		}
+
+		if ( $regenerate ) {
+			$referenced = $this->find_settings_id_references( $incoming, $incoming_ids );
+			$remapped   = $this->regenerate_element_ids( $incoming, $existing );
+			$incoming   = $remapped['elements'];
+
+			if ( ! empty( $referenced ) ) {
+				$warnings[] = sprintf(
+					/* translators: %1$d: Number of IDs, %2$s: Comma-separated sample of IDs */
+					__( 'Element IDs were regenerated, but %1$d of the old IDs (%2$s) also appear inside element settings - a #brxe- selector in _cssCustom, or a third-party element referencing another by ID. Those references now point at IDs that no longer exist and need fixing by hand.', 'bricks-mcp' ),
+					count( $referenced ),
+					implode( ', ', array_slice( $referenced, 0, 5 ) )
+				);
+			}
+		}
+
+		$source_type = get_post_meta( $template_id, '_bricks_template_type', true );
+		$target_type = get_post_meta( $post_id, '_bricks_template_type', true );
+
+		if ( in_array( $source_type, [ 'header', 'footer' ], true ) && $source_type !== $target_type ) {
+			$warnings[] = sprintf(
+				/* translators: %s: Template type (header or footer) */
+				__( 'Source is a %s template. Its content was written to the target\'s own content area, which is unlikely to be what you want unless the target is the same template type.', 'bricks-mcp' ),
+				$source_type
+			);
+		}
+
+		if ( 'replace' === $mode ) {
+			$merged = $incoming;
+		} else {
+			$merged = $this->normalizer->merge_elements(
+				$existing,
+				$incoming,
+				'0',
+				'prepend' === $mode ? 0 : null
+			);
+		}
+
+		$saved = $this->save_elements( $post_id, $merged );
+
+		if ( is_wp_error( $saved ) ) {
+			return $saved;
+		}
+
+		$result = [
+			'post_id'                => $post_id,
+			'template_id'            => $template_id,
+			'template_title'         => $source->post_title,
+			'mode'                   => $mode,
+			'applied_element_count'  => count( $incoming ),
+			'element_count'          => count( $merged ),
+			'replaced_element_count' => 'replace' === $mode ? count( $current ) : 0,
+			'ids_regenerated'        => $regenerate,
+			'permalink'              => get_permalink( $post_id ),
+		];
+
+		if ( ! empty( $warnings ) ) {
+			$result['warnings'] = $warnings;
+		}
+
+		return $result;
 	}
 
 	/**
@@ -7427,6 +7754,20 @@ class BricksService {
 			);
 		}
 
+		/*
+		 * Normalize and structurally validate BEFORE creating the post, so a malformed payload
+		 * fails without leaving an orphaned empty template behind (same order as create_template).
+		 * Note normalize() passes a native flat array through untouched - it does not renumber
+		 * IDs, so an import preserves the IDs it was given.
+		 */
+		$content = $this->normalizer->normalize( $data['content'] );
+
+		$linkage = $this->validate_element_linkage( $content );
+
+		if ( is_wp_error( $linkage ) ) {
+			return $linkage;
+		}
+
 		$template_id = wp_insert_post(
 			array(
 				'post_title'  => sanitize_text_field( $data['title'] ),
@@ -7446,16 +7787,26 @@ class BricksService {
 			);
 		}
 
-		// Regenerate element IDs to prevent collisions.
-		$content = $this->normalizer->normalize( $data['content'] );
-
-		// Save content and editor mode.
-		update_post_meta( $template_id, self::META_KEY, $content );
-		update_post_meta( $template_id, self::EDITOR_MODE_KEY, 'bricks' );
-
-		// Set template type (default to 'section' if not provided).
+		/*
+		 * Set the template type FIRST. save_elements() resolves the content meta key from
+		 * _bricks_template_type, so writing content earlier put header/footer template content
+		 * into _bricks_page_content_2 - where Bricks never reads it, and which page_diagnose
+		 * then reports as phantom content.
+		 */
 		$template_type = sanitize_text_field( $data['templateType'] ?? 'section' );
 		update_post_meta( $template_id, '_bricks_template_type', $template_type );
+
+		/*
+		 * Write content through save_elements() rather than update_post_meta(): it resolves the
+		 * area-specific meta key, unhooks the Bricks meta filters, verifies the write persisted,
+		 * and regenerates the template's CSS file.
+		 */
+		$saved = $this->save_elements( $template_id, $content );
+
+		if ( is_wp_error( $saved ) ) {
+			wp_delete_post( $template_id, true );
+			return $saved;
+		}
 
 		// Save page settings if provided, stripping JS-capable keys when dangerous_actions is disabled.
 		$page_settings_key = defined( 'BRICKS_DB_PAGE_SETTINGS' ) ? BRICKS_DB_PAGE_SETTINGS : '_bricks_page_settings';

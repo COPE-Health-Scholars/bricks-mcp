@@ -276,6 +276,17 @@ if ( ! function_exists( 'wp_update_post' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_delete_post' ) ) {
+	function wp_delete_post( int $post_id, bool $force_delete = false ): object|false {
+		if ( ! isset( $GLOBALS['_bricks_mcp_test_posts'][ $post_id ] ) ) {
+			return false;
+		}
+		$post = (object) $GLOBALS['_bricks_mcp_test_posts'][ $post_id ];
+		unset( $GLOBALS['_bricks_mcp_test_posts'][ $post_id ], $GLOBALS['_bricks_mcp_test_meta'][ $post_id ] );
+		return $post;
+	}
+}
+
 if ( ! function_exists( 'wp_set_object_terms' ) ) {
 	function wp_set_object_terms( int $object_id, mixed $terms, string $taxonomy, bool $append = false ): array {
 		$terms                                                            = is_array( $terms ) ? $terms : array( $terms );
