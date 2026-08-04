@@ -4160,10 +4160,21 @@ final class Router {
 
 		$metadata = $this->bricks_service->get_page_metadata( $post_id );
 
+		$css_file = $this->bricks_service->get_last_css_file();
+
 		return array(
 			'post_id'       => $post_id,
 			'element_count' => count( $elements ),
 			'metadata'      => $metadata,
+			/*
+			 * Proof that the frontend stylesheet was regenerated. Null means the styles were
+			 * saved but no CSS file was written - with Bricks' "External Files" CSS loading
+			 * that means the frontend is still serving the previous stylesheet.
+			 */
+			'css_file'      => $css_file,
+			'css_note'      => null === $css_file
+				? __( 'No CSS file was written. If Bricks "CSS loading method" is set to External Files, the frontend may still serve stale styles until a builder save or `wp bricks regenerate_assets`.', 'bricks-mcp' )
+				: null,
 		);
 	}
 

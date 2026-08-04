@@ -76,6 +76,26 @@ class BricksService {
 	public const EDITOR_MODE_KEY = '_bricks_editor_mode';
 
 	/**
+	 * CSS file name written by the most recent save_elements() call.
+	 *
+	 * Lets callers report whether the frontend stylesheet was actually regenerated instead
+	 * of reporting a bare success. Null when no file was written - see
+	 * trigger_css_regeneration() for the cases that produce null.
+	 *
+	 * @var string|null
+	 */
+	private ?string $last_css_file = null;
+
+	/**
+	 * Get the CSS file name written by the most recent save_elements() call.
+	 *
+	 * @return string|null Written CSS file name, or null if no file was written.
+	 */
+	public function get_last_css_file(): ?string {
+		return $this->last_css_file;
+	}
+
+	/**
 	 * Check if Bricks Builder is active.
 	 *
 	 * This is the single gate for all Bricks-specific functionality.
@@ -167,6 +187,9 @@ class BricksService {
 	 * @return true|\WP_Error True on success, WP_Error on failure.
 	 */
 	public function save_elements( int $post_id, array $elements ): true|\WP_Error {
+		// Clear any file name recorded by a previous call so an early return cannot report it.
+		$this->last_css_file = null;
+
 		// Always run structural linkage validation.
 		$linkage_validation = $this->validate_element_linkage( $elements );
 
@@ -204,7 +227,7 @@ class BricksService {
 			update_post_meta( $post_id, self::EDITOR_MODE_KEY, 'bricks' );
 
 			// Trigger CSS regeneration so frontend styles reflect new content.
-			$this->trigger_css_regeneration( $post_id );
+			$this->last_css_file = $this->trigger_css_regeneration( $post_id );
 
 			// Verify write persisted — bypass cache, read raw from database.
 			wp_cache_delete( $post_id, 'post_meta' );
@@ -378,21 +401,63 @@ class BricksService {
 	 * Needed when Bricks uses External Files CSS mode - API saves bypass the editor
 	 * pipeline that normally regenerates static CSS files.
 	 *
+	 * Mirrors Bricks' own \Bricks\Assets_Files::save_post() handler (which is hooked to
+	 * WordPress' 'save_post', not to any Bricks-specific action) so that programmatic saves
+	 * produce byte-identical CSS to a builder save. Deliberately does NOT substitute a
+	 * literal 'content' area: Templates::get_template_type() returns an empty string for a
+	 * regular page, and Bricks passes that empty string straight through.
+	 *
 	 * @param int $post_id The post ID.
-	 * @return void
+	 * @return string|null Written CSS file name (e.g. "post-123.min.css"), or null when no
+	 *                     file was written (Bricks inactive, cssLoading not "file", or the
+	 *                     post produced no CSS and its stale file was deleted).
 	 */
-	private function trigger_css_regeneration( int $post_id ): void {
+	private function trigger_css_regeneration( int $post_id ): ?string {
 		if ( ! $this->is_bricks_active() ) {
-			return;
+			return null;
 		}
+
 		try {
+			/*
+			 * Courtesy hook retained for third-party listeners. Note that Bricks core does
+			 * NOT register anything on 'bricks/save_post' - it is a no-op as far as CSS file
+			 * generation is concerned, so it must not be relied on to regenerate anything.
+			 */
 			do_action( 'bricks/save_post', $post_id );
-			if ( class_exists( '\Bricks\Assets' ) && method_exists( '\Bricks\Assets', 'generate_css_from_elements' ) ) {
-				$elements = $this->get_elements( $post_id );
-				\Bricks\Assets::generate_css_from_elements( $elements, $post_id );
+
+			if ( ! class_exists( '\Bricks\Assets_Files' )
+				|| ! method_exists( '\Bricks\Assets_Files', 'generate_post_css_file' )
+				|| ! class_exists( '\Bricks\Templates' )
+				|| ! class_exists( '\Bricks\Database' )
+			) {
+				return null;
 			}
+
+			// Content area: '' for a regular page, 'header'/'footer'/'content' for templates.
+			$area = \Bricks\Templates::get_template_type( $post_id );
+
+			/*
+			 * generate_post_css_file() reads Assets::$post_id for the template-preview path,
+			 * and appends Assets::$inline_css[ $area ] without ever resetting it. Reset just
+			 * that one key so a second regeneration in the same request cannot inherit the
+			 * previous post's CSS. Clearing the whole array would drop Bricks' pre-declared
+			 * theme_style/global/page keys.
+			 */
+			if ( class_exists( '\Bricks\Assets' ) ) {
+				\Bricks\Assets::$post_id             = $post_id;
+				\Bricks\Assets::$inline_css[ $area ] = '';
+			}
+
+			$file_name = \Bricks\Assets_Files::generate_post_css_file(
+				$post_id,
+				$area,
+				\Bricks\Database::get_data( $post_id, $area )
+			);
+
+			return is_string( $file_name ) ? $file_name : null;
 		} catch ( \Throwable $e ) {
 			error_log( 'BricksMCP: CSS regen failed for post ' . $post_id . ': ' . $e->getMessage() );
+			return null;
 		}
 	}
 

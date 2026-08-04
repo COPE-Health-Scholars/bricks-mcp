@@ -52,6 +52,27 @@ final class SaveElementsTest extends TestCase {
 	}
 
 	/**
+	 * Extract the full body of save_elements().
+	 *
+	 * Previously each test read a fixed character window (1500/2000) from the start of the
+	 * method, which silently changed meaning whenever the method grew - adding one statement
+	 * near the top pushed the tail of the method out of the window and failed an unrelated
+	 * assertion. Slicing to the method's closing brace keeps these checks stable.
+	 *
+	 * @return string The method body, from its signature to its closing brace.
+	 */
+	private function save_elements_body(): string {
+		$start = strpos( $this->source, 'function save_elements(' );
+		$this->assertNotFalse( $start, 'save_elements method must exist' );
+
+		// A method's closing brace is the first "\n\t}" at one indent level.
+		$end = strpos( $this->source, "\n\t}", $start );
+		$this->assertNotFalse( $end, 'save_elements must have a closing brace' );
+
+		return substr( $this->source, $start, ( $end - $start ) + 3 );
+	}
+
+	/**
 	 * Test that save_elements() clears the post meta object cache before writing.
 	 *
 	 * @return void
@@ -59,10 +80,7 @@ final class SaveElementsTest extends TestCase {
 	public function test_save_elements_clears_cache_before_write(): void {
 		// wp_cache_delete( must appear in save_elements before update_post_meta(.
 		// Use function-call syntax to avoid matching docblock text.
-		$save_start = strpos( $this->source, 'function save_elements(' );
-		$this->assertNotFalse( $save_start, 'save_elements method must exist' );
-
-		$save_body = substr( $this->source, $save_start, 1500 );
+		$save_body = $this->save_elements_body();
 
 		$cache_pos  = strpos( $save_body, 'wp_cache_delete(' );
 		$update_pos = strpos( $save_body, 'update_post_meta(' );
@@ -78,8 +96,7 @@ final class SaveElementsTest extends TestCase {
 	 * @return void
 	 */
 	public function test_save_elements_has_delete_add_fallback(): void {
-		$save_start = strpos( $this->source, 'function save_elements(' );
-		$save_body  = substr( $this->source, $save_start, 1500 );
+		$save_body = $this->save_elements_body();
 
 		$this->assertStringContainsString( 'delete_post_meta', $save_body, 'save_elements must have delete_post_meta fallback' );
 		$this->assertStringContainsString( 'add_post_meta', $save_body, 'save_elements must have add_post_meta fallback' );
@@ -98,8 +115,7 @@ final class SaveElementsTest extends TestCase {
 	 * @return void
 	 */
 	public function test_save_elements_verifies_write_via_readback(): void {
-		$save_start = strpos( $this->source, 'function save_elements(' );
-		$save_body  = substr( $this->source, $save_start, 2000 );
+		$save_body = $this->save_elements_body();
 
 		// Must read back via get_post_meta after write.
 		$this->assertStringContainsString( 'get_post_meta', $save_body, 'save_elements must read back via get_post_meta for verification' );
@@ -120,8 +136,7 @@ final class SaveElementsTest extends TestCase {
 	 * @return void
 	 */
 	public function test_save_elements_returns_wp_error_on_verification_failure(): void {
-		$save_start = strpos( $this->source, 'function save_elements(' );
-		$save_body  = substr( $this->source, $save_start, 2000 );
+		$save_body = $this->save_elements_body();
 
 		$this->assertStringContainsString( 'save_elements_failed', $save_body, 'save_elements must return WP_Error with code save_elements_failed on verification failure' );
 	}

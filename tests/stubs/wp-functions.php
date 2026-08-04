@@ -30,6 +30,7 @@ $GLOBALS['_bricks_mcp_test_cache']            = [];
 $GLOBALS['_bricks_mcp_test_settings']         = [];
 $GLOBALS['_bricks_mcp_test_ext_object_cache'] = true;
 $GLOBALS['_bricks_mcp_test_transients']       = [];
+$GLOBALS['_bricks_mcp_test_did_actions']      = [];
 
 // ---------------------------------------------------------------------------
 // WP_Error class.
@@ -248,6 +249,15 @@ if ( ! function_exists( 'did_action' ) ) {
 if ( ! function_exists( 'add_action' ) ) {
 	function add_action( string $hook_name, callable $callback, int $priority = 10, int $accepted_args = 1 ): bool {
 		return true;
+	}
+}
+
+if ( ! function_exists( 'do_action' ) ) {
+	function do_action( string $hook_name, mixed ...$args ): void {
+		$GLOBALS['_bricks_mcp_test_did_actions'][] = array(
+			'hook' => $hook_name,
+			'args' => $args,
+		);
 	}
 }
 
