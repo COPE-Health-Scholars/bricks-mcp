@@ -1,0 +1,30 @@
+# Normalize line endings.
+#
+# Without this, a Windows clone under `core.autocrlf=true` gets a CRLF working
+# tree against this repo's LF index. PHPCS then reports a wave of phantom
+# Generic.Files.LineEndings.InvalidEOLChar errors that CI, running on Linux,
+# never sees — sending you chasing ~37 findings that do not exist.
+#
+# `eol=lf` pins the working tree to LF too, so the platform and the local
+# autocrlf setting stop mattering.
+* text=auto eol=lf
+
+# Scripts CI executes must keep LF whatever the checkout does.
+*.sh text eol=lf
+
+# Binary files: never normalize, never diff as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.svgz binary
+*.woff  binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.zip binary
+*.gz  binary
+*.mo  binary

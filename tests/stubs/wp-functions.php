@@ -157,10 +157,50 @@ if ( ! function_exists( 'update_option' ) ) {
 // ---------------------------------------------------------------------------
 if ( ! function_exists( 'bricks_mcp_test_reset_posts' ) ) {
 	function bricks_mcp_test_reset_posts(): void {
-		$GLOBALS['_bricks_mcp_test_posts']        = [];
-		$GLOBALS['_bricks_mcp_test_meta']         = [];
-		$GLOBALS['_bricks_mcp_test_terms']        = [];
-		$GLOBALS['_bricks_mcp_test_next_post_id'] = 1000;
+		$GLOBALS['_bricks_mcp_test_posts']             = [];
+		$GLOBALS['_bricks_mcp_test_meta']              = [];
+		$GLOBALS['_bricks_mcp_test_terms']             = [];
+		$GLOBALS['_bricks_mcp_test_next_post_id']      = 1000;
+		$GLOBALS['_bricks_mcp_test_meta_calls']        = [];
+		$GLOBALS['_bricks_mcp_test_blocked_meta_keys'] = [];
+	}
+}
+
+if ( ! function_exists( 'bricks_mcp_test_record_meta_call' ) ) {
+	/**
+	 * Record a meta/cache call so tests can assert on ordering.
+	 *
+	 * Lets a test check "the cache was cleared before the write" by reading the
+	 * calls that actually happened, rather than by grepping the source for the
+	 * two function names and comparing their offsets.
+	 *
+	 * @param string $fn      Function name.
+	 * @param int    $post_id Post ID.
+	 * @param string $key     Meta key or cache key.
+	 * @return void
+	 */
+	function bricks_mcp_test_record_meta_call( string $fn, int $post_id, string $key ): void {
+		$GLOBALS['_bricks_mcp_test_meta_calls'][] = [
+			'fn'      => $fn,
+			'post_id' => $post_id,
+			'key'     => $key,
+		];
+	}
+}
+
+if ( ! function_exists( 'bricks_mcp_test_meta_write_blocked' ) ) {
+	/**
+	 * Whether writes to a meta key should be silently dropped.
+	 *
+	 * Simulates the real failure save_elements() guards against: the write call
+	 * reports success but nothing lands in the database, because something
+	 * downstream rejected it. Blocked writes therefore return truthy.
+	 *
+	 * @param string $key Meta key.
+	 * @return bool True when writes to this key should not persist.
+	 */
+	function bricks_mcp_test_meta_write_blocked( string $key ): bool {
+		return in_array( $key, $GLOBALS['_bricks_mcp_test_blocked_meta_keys'] ?? [], true );
 	}
 }
 
@@ -232,12 +272,19 @@ if ( ! function_exists( 'get_post_meta' ) ) {
 
 if ( ! function_exists( 'update_post_meta' ) ) {
 	function update_post_meta( int $post_id, string $key, mixed $value ): bool {
+		bricks_mcp_test_record_meta_call( 'update_post_meta', $post_id, $key );
+
 		$existing = $GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] ?? null;
 
 		// WordPress returns false when the new value is identical to the stored one.
 		// Mirrored so the delete+add fallback in save_elements() is exercised faithfully.
 		if ( null !== $existing && $existing === $value ) {
 			return false;
+		}
+
+		// Reports success without persisting — see bricks_mcp_test_meta_write_blocked().
+		if ( bricks_mcp_test_meta_write_blocked( $key ) ) {
+			return true;
 		}
 
 		$GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] = $value;
@@ -247,9 +294,16 @@ if ( ! function_exists( 'update_post_meta' ) ) {
 
 if ( ! function_exists( 'add_post_meta' ) ) {
 	function add_post_meta( int $post_id, string $key, mixed $value, bool $unique = false ): int|false {
+		bricks_mcp_test_record_meta_call( 'add_post_meta', $post_id, $key );
+
 		if ( $unique && isset( $GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] ) ) {
 			return false;
 		}
+
+		if ( bricks_mcp_test_meta_write_blocked( $key ) ) {
+			return 1;
+		}
+
 		$GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] = $value;
 		return 1;
 	}
@@ -257,6 +311,8 @@ if ( ! function_exists( 'add_post_meta' ) ) {
 
 if ( ! function_exists( 'delete_post_meta' ) ) {
 	function delete_post_meta( int $post_id, string $key ): bool {
+		bricks_mcp_test_record_meta_call( 'delete_post_meta', $post_id, $key );
+
 		unset( $GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] );
 		return true;
 	}
@@ -297,6 +353,8 @@ if ( ! function_exists( 'wp_set_object_terms' ) ) {
 
 if ( ! function_exists( 'wp_cache_delete' ) ) {
 	function wp_cache_delete( mixed $key, string $group = '' ): bool {
+		bricks_mcp_test_record_meta_call( 'wp_cache_delete', is_int( $key ) ? $key : 0, $group );
+
 		unset( $GLOBALS['_bricks_mcp_test_cache'][ "{$group}:{$key}" ] );
 		return true;
 	}
@@ -507,6 +565,10 @@ if ( ! function_exists( 'do_action' ) ) {
 
 if ( ! function_exists( 'add_filter' ) ) {
 	function add_filter( string $hook_name, callable $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+		$GLOBALS['_bricks_mcp_test_added_filters'][] = array(
+			'hook'     => $hook_name,
+			'priority' => $priority,
+		);
 		return true;
 	}
 }

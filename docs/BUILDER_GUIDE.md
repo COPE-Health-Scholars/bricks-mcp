@@ -1535,14 +1535,103 @@ re-sending a large element array through a tool call is the single most expensiv
   which case they are rewritten and `ids_regenerated: true` comes back. Pass
   `regenerate_ids: true` to force a rewrite, or `false` to be refused rather than have IDs
   rewritten silently.
-- If an old ID was also referenced from inside settings — a `#brxe-{id}` selector in
-  `_cssCustom`, or a third-party element naming another element — a rewrite cannot follow that
-  reference, and the response warns with the affected IDs. Prefer custom classes over
-  `#brxe-{id}` selectors in content you intend to transport.
+- If an old ID was also referenced from inside settings, a rewrite follows the references it can
+  identify structurally: a `#brxe-{id}` selector anywhere in a string setting, and any setting
+  whose *entire* value is a remapped ID (how a third-party element names another element). The
+  response reports how many were rewritten.
+- What it will not do is rewrite an ID that appears as part of a longer string — inside copy, a
+  URL, a class name. There a reference is indistinguishable from a coincidence, and rewriting
+  would corrupt content to fix a reference that may never have existed. Those are still reported
+  for you to check by hand. Prefer custom classes over `#brxe-{id}` selectors in content you
+  intend to transport.
 
 Unlike the builder's Insert Template, this does **not** renumber IDs by default. That is
 deliberate: preserved IDs are what let a generator diff its own output against the live page
 later and patch only what differs.
+
+### Diffing a Live Page Cheaply — `view=structure`
+
+`content:get` with `view=detail` returns every setting of every element, and `view=summary`
+returns a nested node per element. On a large page both are big enough that the response is
+persisted to a file instead of being usable in the conversation — for a 950-element page, on the
+order of 200 KB and up. That made the *read* half of diff-and-patch far more expensive than the
+write half.
+
+`view=structure` returns only what a positional diff reads:
+
+```
+content:get  post_id=<id>  view=structure
+```
+
+```json
+{
+  "total": 950,
+  "row_format": "id|name|parent|settings_hash",
+  "rows": [
+    "abc123|section|0|1f4c9a02be71",
+    "def456|heading|abc123|77b1e0c4aa38"
+  ],
+  "type_counts": { "section": 19, "text-basic": 272 },
+  "name_sequence_hash": "…",
+  "rows_hash": "…",
+  "hash_recipe": "sha1 of the settings serialized as JSON with map keys sorted…"
+}
+```
+
+Rows are **index-aligned with stored element order**, so row *n* describes element *n*. Each row
+is one delimited string rather than an object or a tuple: repeating four key names 950 times
+would be most of the payload, and a string stays one line however the transport formats JSON —
+a tuple gets re-expanded to six lines each by pretty-printing, which is most of why `summary`
+gets so large.
+
+For a 952-element page this measures ~44 KB pretty-printed / ~35 KB compact, against ~188 KB and
+~220 KB for `summary` and `detail`. That is a 4–5× reduction and roughly the floor for this
+design: one 37-character row per element is irreducible if you want a per-element fingerprint.
+If you only need "did this page change at all", compare `rows_hash` alone.
+
+**The workflow it enables:**
+
+1. `content:get view=structure` on the live page.
+2. Compare `name_sequence_hash` with the same hash computed over your generated tree. If they
+   match, index *n* corresponds to index *n* and you can address elements positionally.
+3. Compare `settings_hash` per row against your locally computed hash to find *which* indices
+   differ — no settings cross the wire.
+4. `content:bulk_update` with only those patches (max 50 per call).
+
+**Reproducing `settings_hash` locally.** The hash is only useful if you can compute the same
+value over your own generated JSON, so the canonical form is pinned and shipped in the response
+as `hash_recipe`: sha1 of the settings serialized as JSON with map keys sorted as strings, list
+order preserved, no whitespace, slashes and unicode unescaped, empty containers rendered as `{}`,
+truncated to the first 12 hex characters. In Python:
+
+```python
+import hashlib, json
+
+def canon(v):
+    if isinstance(v, dict):
+        return {k: canon(v[k]) for k in sorted(v)} or {}
+    if isinstance(v, list):
+        return [canon(x) for x in v] if v else {}
+    return v
+
+def settings_hash(settings):
+    blob = json.dumps(canon(settings), sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(blob.encode()).hexdigest()[:12]
+```
+
+Empty lists and empty dicts both normalize to `{}` because PHP cannot distinguish the two, so
+that is the only rule both sides can agree on. List order *is* significant — order is meaningful
+in repeaters and `_attributes`.
+
+**Two things `settings_hash` does not cover:**
+
+- The top-level `label` (the structure-panel element name) is a sibling of `settings`, not a
+  member of it, so renaming an element does not change its hash.
+- Bricks *enriches* image settings on save — it adds `filename`/`size` and drops `url` — so
+  `image` elements will always differ from a generator's output even when the underlying asset is
+  unchanged, and the stored copy is the richer one. Filter rows whose `name` is `image` out of a
+  diff unless the asset genuinely changed.
 
 ### Cross-Site Template Workflow
 

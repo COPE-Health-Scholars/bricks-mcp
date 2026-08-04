@@ -29,7 +29,7 @@ Bricks MCP is a WordPress plugin that implements an [MCP (Model Context Protocol
 
 No Composer required. The plugin ships its own PSR-4 autoloader (`includes/Autoloader.php`) that maps the `BricksMCP\` namespace to the `includes/` directory. Simply upload and activate -- no build step needed.
 
-1. Download the latest release from [GitHub Releases](https://github.com/cristianuibar/bricks-mcp/releases)
+1. Download the latest release from [GitHub Releases](https://github.com/COPE-Health-Scholars/bricks-mcp/releases)
 2. Upload to your WordPress site via Plugins > Add New > Upload Plugin
 3. Activate the plugin
 4. Go to Settings > Bricks MCP to configure
@@ -204,7 +204,7 @@ add_filter( 'bricks_mcp_tools', function( $tools ) {
 Prerequisites: [Docker](https://docs.docker.com/get-docker/) and [Node.js](https://nodejs.org/) 18+.
 
 ```bash
-git clone https://github.com/cristianuibar/bricks-mcp.git
+git clone https://github.com/COPE-Health-Scholars/bricks-mcp.git
 cd bricks-mcp
 npm install
 npm run start

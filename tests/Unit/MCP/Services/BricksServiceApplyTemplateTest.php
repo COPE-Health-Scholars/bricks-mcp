@@ -356,11 +356,17 @@ final class BricksServiceApplyTemplateTest extends TestCase {
 	}
 
 	/**
-	 * A rewrite that would orphan a reference inside settings has to say so.
+	 * A `#brxe-` reference inside settings is now followed, not left dangling.
+	 *
+	 * This previously asserted that the old ID was *named in a warning* as
+	 * hand-work. It is fixed automatically now — the prefix makes the reference
+	 * unambiguous — so the contract asserted here is that the stored selector
+	 * names the new ID and the old one is gone. See
+	 * BricksServiceSettingsIdRemapTest for the shapes still reported by hand.
 	 *
 	 * @return void
 	 */
-	public function test_regeneration_warns_when_an_id_is_referenced_from_settings(): void {
+	public function test_regeneration_rewrites_an_id_referenced_from_settings(): void {
 		$tree                              = $this->tree( 'tt' );
 		$tree[0]['settings']['_cssCustom'] = '#brxe-ttkid1 { color: red; }';
 
@@ -369,8 +375,34 @@ final class BricksServiceApplyTemplateTest extends TestCase {
 
 		$result = $this->service->apply_template( $template_id, $page_id, 'replace', true );
 
+		$stored     = get_post_meta( $page_id, BricksService::META_KEY, true );
+		$css_custom = $stored[0]['settings']['_cssCustom'];
+
+		$this->assertStringNotContainsString( 'ttkid1', $css_custom, 'the stale ID must not survive' );
+		$this->assertSame( '#brxe-' . $stored[1]['id'] . ' { color: red; }', $css_custom );
+		$this->assertStringContainsString( 'rewritten', implode( ' ', $result['warnings'] ?? array() ) );
+	}
+
+	/**
+	 * An ambiguous reference inside a longer string is still reported.
+	 *
+	 * A bare ID embedded in copy cannot be told from a coincidence, so it is
+	 * deliberately not rewritten — and must still be surfaced rather than
+	 * silently left behind.
+	 *
+	 * @return void
+	 */
+	public function test_regeneration_still_warns_about_an_ambiguous_reference(): void {
+		$tree                          = $this->tree( 'tt' );
+		$tree[1]['settings']['text']   = 'Anchor to ttkid2 in the sidebar.';
+
+		$template_id = $this->make_template( $tree );
+		$page_id     = $this->make_page();
+
+		$result = $this->service->apply_template( $template_id, $page_id, 'replace', true );
+
 		$this->assertArrayHasKey( 'warnings', $result );
-		$this->assertStringContainsString( 'ttkid1', implode( ' ', $result['warnings'] ) );
+		$this->assertStringContainsString( 'ttkid2', implode( ' ', $result['warnings'] ) );
 	}
 
 	// -----------------------------------------------------------------------

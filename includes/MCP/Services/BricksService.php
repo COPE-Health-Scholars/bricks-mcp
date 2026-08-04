@@ -86,6 +86,17 @@ class BricksService {
 	public const EDITOR_MODE_KEY = '_bricks_editor_mode';
 
 	/**
+	 * How to reproduce a `settings_hash` from get_page_structure() locally.
+	 *
+	 * Shipped in the response because the hash is only useful if the caller can
+	 * compute the same value over its own generated JSON — otherwise finding
+	 * which elements differ still costs a full settings read.
+	 *
+	 * @var string
+	 */
+	public const STRUCTURE_HASH_RECIPE = 'sha1 of the settings serialized as JSON with map keys sorted as strings, list order preserved, no whitespace, slashes and unicode unescaped, and empty containers rendered as {}; truncated to the first 12 hex characters. Python equivalent: hashlib.sha1(json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:12] — with empty dicts and empty lists both normalized to {} first.';
+
+	/**
 	 * CSS file name written by the most recent save_elements() call.
 	 *
 	 * Lets callers report whether the frontend stylesheet was actually regenerated instead
@@ -140,10 +151,10 @@ class BricksService {
 	 * Root elements use parent 0 (int) or '0' (string); that marker is never remapped.
 	 * IDs absent from the map are left untouched, so a partial map is safe.
 	 *
-	 * Element *settings* are deliberately not rewritten. Bricks stores no element references
-	 * in settings, but third-party elements sometimes do (a slider control naming its slider),
-	 * and rewriting arbitrary settings strings would corrupt content that merely looks like an
-	 * ID. Use find_settings_id_references() to detect that case and report it.
+	 * Element *settings* are deliberately not rewritten here, because rewriting arbitrary
+	 * settings strings would corrupt content that merely looks like an ID. Call
+	 * remap_settings_id_references() for the references that can be identified structurally,
+	 * and find_settings_id_references() to report whatever ambiguity is left.
 	 *
 	 * @param array<int, array<string, mixed>> $elements Flat element array.
 	 * @param array<string, string>            $id_map   old ID => new ID.
@@ -220,11 +231,113 @@ class BricksService {
 	}
 
 	/**
+	 * Rewrite the element-ID references inside settings that can be identified structurally.
+	 *
+	 * Linkage remapping via remap_element_ids() fixes `id`/`parent`/`children`, but an ID can
+	 * also be named from inside settings, and those references used to be reported and left
+	 * dangling — hand-work after every regenerated apply. Blanket replacement is not the answer:
+	 * a six-character ID can occur inside prose, a URL or a class name, and rewriting that
+	 * would corrupt content to fix a reference that was never there.
+	 *
+	 * So only two shapes are rewritten, both unambiguous:
+	 *
+	 * 1. `#brxe-<id>` anywhere inside a string. The prefix is Bricks' own element-ID selector,
+	 *    so a match cannot be coincidence. This is the common case — a per-element rule baked
+	 *    into `_cssCustom`.
+	 * 2. A string whose *entire* value is a remapped ID. Third-party elements that target
+	 *    another element store the bare ID as the whole setting value. A setting whose complete
+	 *    value is precisely another element's random ID is a reference, not copy.
+	 *
+	 * A bare ID appearing as part of a longer string is left alone and still reported by
+	 * find_settings_id_references(), because there is no way to tell a reference from a
+	 * coincidence without knowing the third-party element's contract.
+	 *
+	 * @param array<int, array<string, mixed>> $elements Flat element array.
+	 * @param array<string, string>            $id_map   old ID => new ID.
+	 * @return array{elements: array<int, array<string, mixed>>, rewritten: int} Elements and the number of references rewritten.
+	 */
+	public function remap_settings_id_references( array $elements, array $id_map ): array {
+		if ( empty( $id_map ) ) {
+			return [
+				'elements'  => $elements,
+				'rewritten' => 0,
+			];
+		}
+
+		$rewritten = 0;
+
+		foreach ( $elements as $index => $element ) {
+			if ( ! is_array( $element ) || empty( $element['settings'] ) || ! is_array( $element['settings'] ) ) {
+				continue;
+			}
+
+			$elements[ $index ]['settings'] = $this->rewrite_id_references( $element['settings'], $id_map, $rewritten );
+		}
+
+		return [
+			'elements'  => $elements,
+			'rewritten' => $rewritten,
+		];
+	}
+
+	/**
+	 * Recursively rewrite identifiable ID references in a settings value.
+	 *
+	 * @param mixed                 $value     Settings value to walk.
+	 * @param array<string, string> $id_map    old ID => new ID.
+	 * @param int                   $rewritten Running count, by reference.
+	 * @return mixed The value with references rewritten.
+	 */
+	private function rewrite_id_references( mixed $value, array $id_map, int &$rewritten ): mixed {
+		if ( is_array( $value ) ) {
+			foreach ( $value as $key => $item ) {
+				$value[ $key ] = $this->rewrite_id_references( $item, $id_map, $rewritten );
+			}
+
+			return $value;
+		}
+
+		if ( ! is_string( $value ) || '' === $value ) {
+			return $value;
+		}
+
+		// Shape 2: the whole value is a remapped ID.
+		if ( isset( $id_map[ $value ] ) ) {
+			++$rewritten;
+			return $id_map[ $value ];
+		}
+
+		// Shape 1: a #brxe-<id> selector somewhere inside the string.
+		if ( ! str_contains( $value, '#brxe-' ) ) {
+			return $value;
+		}
+
+		return (string) preg_replace_callback(
+			'/#brxe-([A-Za-z0-9_-]+)/',
+			static function ( array $matches ) use ( $id_map, &$rewritten ): string {
+				if ( ! isset( $id_map[ $matches[1] ] ) ) {
+					return $matches[0];
+				}
+
+				++$rewritten;
+				return '#brxe-' . $id_map[ $matches[1] ];
+			},
+			$value
+		);
+	}
+
+	/**
 	 * Find IDs that are referenced from inside element settings.
 	 *
-	 * Used to warn when an ID rewrite would break a reference remap_element_ids() cannot
-	 * safely follow - a `#brxe-<id>` selector baked into _cssCustom, or a third-party element
-	 * that targets another element by ID.
+	 * Used to warn when an ID rewrite would break a reference that cannot be followed
+	 * automatically — a third-party element that targets another element by ID as part of a
+	 * longer string. Structurally identifiable references are rewritten by
+	 * remap_settings_id_references() and so should be gone before this is used to warn.
+	 *
+	 * Matching is boundary-aware: an ID only counts when it is not butted up against another
+	 * alphanumeric. A plain substring search reported an ID any time its six characters
+	 * happened to fall inside a longer word or URL, which made the warning fire on content
+	 * that held no reference at all. `-` counts as a boundary so `#brxe-<id>` still matches.
 	 *
 	 * @param array<int, array<string, mixed>> $elements Flat element array to scan.
 	 * @param array<int, string>               $ids      IDs to look for.
@@ -250,7 +363,12 @@ class BricksService {
 		$found    = [];
 		foreach ( $ids as $id ) {
 			$id = (string) $id;
-			if ( '' !== $id && str_contains( $haystack, $id ) ) {
+
+			if ( '' === $id ) {
+				continue;
+			}
+
+			if ( 1 === preg_match( '/(?<![A-Za-z0-9_])' . preg_quote( $id, '/' ) . '(?![A-Za-z0-9_])/', $haystack ) ) {
 				$found[] = $id;
 			}
 		}
@@ -2831,6 +2949,152 @@ class BricksService {
 	}
 
 	/**
+	 * Get a compact structural fingerprint of a page's elements.
+	 *
+	 * Built for the diff-and-patch deploy workflow: confirm a live page and a
+	 * locally generated one correspond, find which indices differ, then patch
+	 * only those with bulk_update. `view=summary` and `view=detail` can both
+	 * answer that, but at ~344 KB and ~665 KB respectively for a 950-element
+	 * page — large enough that the response spills to a file instead of being
+	 * usable in the conversation. This returns the same answer in roughly a
+	 * tenth of that by dropping every field a positional diff does not read.
+	 *
+	 * Rows are index-aligned with stored element order, so row *n* corresponds
+	 * to element *n* — the correspondence the deploy workflow relies on. Each
+	 * row is one delimited string in the order given by `row_format`, rather
+	 * than an object or a tuple, for two reasons: repeating four key names 950
+	 * times would be most of the payload, and a string stays one line however
+	 * the transport formats JSON. A tuple would be re-expanded to six lines
+	 * each by pretty-printing, which is most of why `summary` reaches 344 KB.
+	 *
+	 * None of the four fields can contain the `|` delimiter: ids and hashes are
+	 * alphanumeric, `parent` is either `0` or an id, and element names come from
+	 * the Bricks element registry.
+	 *
+	 * `settings_hash` covers the element's `settings` only. Notably it does NOT
+	 * cover the top-level `label` (the structure-panel name), which is a
+	 * sibling of `settings` rather than a member of it.
+	 *
+	 * Two caveats that are properties of Bricks, not of this method:
+	 * - Image elements are enriched by Bricks on save (it adds `filename`/`size`
+	 *   and drops `url`), so their hashes differ from a generator's output even
+	 *   when the underlying asset is unchanged. Exclude rows whose `name` is
+	 *   `image` from a diff unless the asset genuinely changed.
+	 * - Element ids are preserved by import and apply_template but regenerated
+	 *   by the builder's Insert Template, so `id` is only a stable handle for
+	 *   content that has not been through the builder.
+	 *
+	 * @param int $post_id The post ID.
+	 * @return array<string, mixed> Compact structure: totals, legend, rows and hashes.
+	 */
+	public function get_page_structure( int $post_id ): array {
+		$elements = $this->get_elements( $post_id );
+
+		$rows        = [];
+		$names       = [];
+		$type_counts = [];
+
+		foreach ( $elements as $element ) {
+			$name    = $element['name'] ?? 'unknown';
+			$names[] = $name;
+
+			if ( ! isset( $type_counts[ $name ] ) ) {
+				$type_counts[ $name ] = 0;
+			}
+			++$type_counts[ $name ];
+
+			$rows[] = implode(
+				'|',
+				[
+					(string) ( $element['id'] ?? '' ),
+					$name,
+					(string) ( $element['parent'] ?? 0 ),
+					$this->settings_fingerprint( $element['settings'] ?? [] ),
+				]
+			);
+		}
+
+		return [
+			'total'              => count( $elements ),
+			'row_format'         => 'id|name|parent|settings_hash',
+			'rows'               => $rows,
+			'type_counts'        => $type_counts,
+			'name_sequence_hash' => empty( $names ) ? '' : sha1( implode( "\n", $names ) ),
+			'rows_hash'          => empty( $rows ) ? '' : sha1( implode( "\n", $rows ) ),
+			'hash_recipe'        => self::STRUCTURE_HASH_RECIPE,
+		];
+	}
+
+	/**
+	 * Fingerprint an element's settings for positional diffing.
+	 *
+	 * Truncated to 12 hex characters: enough that a collision across a page of
+	 * a few thousand elements is not a practical concern, short enough that the
+	 * column stays a small share of the payload.
+	 *
+	 * @param mixed $settings The element's settings value.
+	 * @return string 12-character hex fingerprint.
+	 */
+	private function settings_fingerprint( mixed $settings ): string {
+		return substr( sha1( $this->canonical_json( $settings ) ), 0, 12 );
+	}
+
+	/**
+	 * Serialize a value to the canonical JSON form the fingerprint hashes.
+	 *
+	 * The point of pinning a canonical form is that the caller must be able to
+	 * reproduce these hashes locally, against generated JSON, without reading
+	 * any settings back over the wire. See self::STRUCTURE_HASH_RECIPE for the
+	 * equivalent in Python.
+	 *
+	 * @param mixed $value Value to serialize.
+	 * @return string Canonical JSON.
+	 */
+	private function canonical_json( mixed $value ): string {
+		return (string) wp_json_encode(
+			$this->canonicalize( $value ),
+			JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+		);
+	}
+
+	/**
+	 * Recursively put a value into canonical form.
+	 *
+	 * Object keys are sorted as strings so PHP's storage order stops mattering.
+	 * Lists keep their order, because element order is meaningful in Bricks
+	 * settings (repeaters, `_attributes`). Empty containers collapse to `{}`
+	 * regardless of whether PHP held them as an empty list or an empty map —
+	 * PHP cannot distinguish the two, so treating them alike is the only rule
+	 * a caller can reproduce.
+	 *
+	 * @param mixed $value Value to canonicalize.
+	 * @return mixed Canonical value ready for JSON encoding.
+	 */
+	private function canonicalize( mixed $value ): mixed {
+		if ( ! is_array( $value ) ) {
+			return $value;
+		}
+
+		if ( [] === $value ) {
+			return new \stdClass();
+		}
+
+		if ( array_is_list( $value ) ) {
+			return array_map( [ $this, 'canonicalize' ], $value );
+		}
+
+		ksort( $value, SORT_STRING );
+
+		$canonical = [];
+		foreach ( $value as $key => $item ) {
+			$canonical[ (string) $key ] = $this->canonicalize( $item );
+		}
+
+		// Cast to object so a map with numeric-ish keys never encodes as a list.
+		return (object) $canonical;
+	}
+
+	/**
 	 * Get standard metadata for a post.
 	 *
 	 * Returns title, status, slug, author, dates, featured image, and template.
@@ -3198,14 +3462,33 @@ class BricksService {
 		}
 
 		if ( $regenerate ) {
+			$remapped = $this->regenerate_element_ids( $incoming, $existing );
+			$incoming = $remapped['elements'];
+
+			// Follow the references that can be identified structurally — #brxe- selectors and
+			// settings whose whole value is a remapped ID — then warn only about what is left.
+			$settings_remap = $this->remap_settings_id_references( $incoming, $remapped['id_map'] );
+			$incoming       = $settings_remap['elements'];
+
 			$referenced = $this->find_settings_id_references( $incoming, $incoming_ids );
-			$remapped   = $this->regenerate_element_ids( $incoming, $existing );
-			$incoming   = $remapped['elements'];
+
+			if ( $settings_remap['rewritten'] > 0 ) {
+				$warnings[] = sprintf(
+					/* translators: %d: Number of references rewritten */
+					_n(
+						'Element IDs were regenerated, and %d ID reference inside element settings was rewritten to match.',
+						'Element IDs were regenerated, and %d ID references inside element settings were rewritten to match.',
+						$settings_remap['rewritten'],
+						'bricks-mcp'
+					),
+					$settings_remap['rewritten']
+				);
+			}
 
 			if ( ! empty( $referenced ) ) {
 				$warnings[] = sprintf(
 					/* translators: %1$d: Number of IDs, %2$s: Comma-separated sample of IDs */
-					__( 'Element IDs were regenerated, but %1$d of the old IDs (%2$s) also appear inside element settings - a #brxe- selector in _cssCustom, or a third-party element referencing another by ID. Those references now point at IDs that no longer exist and need fixing by hand.', 'bricks-mcp' ),
+					__( 'Element IDs were regenerated, but %1$d of the old IDs (%2$s) still appear inside element settings as part of a longer string, where a reference cannot be told apart from a coincidence. Those need checking by hand.', 'bricks-mcp' ),
 					count( $referenced ),
 					implode( ', ', array_slice( $referenced, 0, 5 ) )
 				);

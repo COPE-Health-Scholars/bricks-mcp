@@ -2,8 +2,18 @@
 /**
  * Tests for BricksService::save_elements() robustness.
  *
- * Verifies cache-clearing, fallback write, and post-write verification
- * logic added to fix OPS-172 (silent save failures).
+ * Every assertion here reads what the method actually did — the meta that
+ * landed in the store, the calls that were recorded, the value returned.
+ *
+ * The previous version of this file asserted on substrings in the method body:
+ * that `wp_cache_delete(` appeared at a lower string offset than
+ * `update_post_meta(`, that the text `delete_post_meta` was present, that the
+ * literal `save_elements_failed` occurred somewhere. All four would pass
+ * against an implementation that contained the right words in the right order
+ * and did nothing useful with them — for instance a `wp_cache_delete()` call on
+ * the wrong cache group, or a `save_elements_failed` error that could never be
+ * reached. They would also fail on a correct implementation that was merely
+ * refactored. Substring order is not behaviour.
  *
  * @package BricksMCP
  * @license GPL-2.0-or-later
@@ -13,131 +23,362 @@ declare(strict_types=1);
 
 namespace BricksMCP\Tests\Unit;
 
+use BricksMCP\MCP\Services\BricksService;
 use PHPUnit\Framework\TestCase;
 
 /**
- * Tests for save_elements() failure modes.
- *
- * These tests verify the structural behavior of the save_elements() method
- * by inspecting the source code for required patterns. Full integration
- * testing is done via live MCP API calls in Task 2.
+ * Behavioural tests for save_elements() failure modes.
  */
 final class SaveElementsTest extends TestCase {
 
 	/**
-	 * Path to BricksService.php.
+	 * Service under test.
 	 *
-	 * @var string
+	 * @var BricksService
 	 */
-	private string $service_path;
+	private BricksService $service;
 
 	/**
-	 * Source code of BricksService.php.
-	 *
-	 * @var string
-	 */
-	private string $source;
-
-	/**
-	 * Set up the test.
+	 * Install Bricks doubles and reset the in-memory store.
 	 *
 	 * @return void
 	 */
 	protected function setUp(): void {
 		parent::setUp();
 
-		$this->service_path = dirname( __DIR__, 2 ) . '/includes/MCP/Services/BricksService.php';
-		$this->assertFileExists( $this->service_path, 'BricksService.php must exist' );
-		$this->source = (string) file_get_contents( $this->service_path );
+		require_once dirname( __DIR__ ) . '/stubs/bricks-classes.php';
+
+		bricks_mcp_test_reset_posts();
+
+		$GLOBALS['_bricks_mcp_test_generate_calls'] = array();
+		$GLOBALS['_bricks_mcp_test_get_data_calls'] = array();
+		$GLOBALS['_bricks_mcp_test_elements']       = array();
+
+		\Bricks\Assets::$post_id    = 0;
+		\Bricks\Assets::$inline_css = array();
+
+		$this->service = new BricksService();
 	}
 
 	/**
-	 * Extract the full body of save_elements().
-	 *
-	 * Previously each test read a fixed character window (1500/2000) from the start of the
-	 * method, which silently changed meaning whenever the method grew - adding one statement
-	 * near the top pushed the tail of the method out of the window and failed an unrelated
-	 * assertion. Slicing to the method's closing brace keeps these checks stable.
-	 *
-	 * @return string The method body, from its signature to its closing brace.
-	 */
-	private function save_elements_body(): string {
-		$start = strpos( $this->source, 'function save_elements(' );
-		$this->assertNotFalse( $start, 'save_elements method must exist' );
-
-		// A method's closing brace is the first "\n\t}" at one indent level.
-		$end = strpos( $this->source, "\n\t}", $start );
-		$this->assertNotFalse( $end, 'save_elements must have a closing brace' );
-
-		return substr( $this->source, $start, ( $end - $start ) + 3 );
-	}
-
-	/**
-	 * Test that save_elements() clears the post meta object cache before writing.
+	 * Reset injected failures.
 	 *
 	 * @return void
 	 */
-	public function test_save_elements_clears_cache_before_write(): void {
-		// wp_cache_delete( must appear in save_elements before update_post_meta(.
-		// Use function-call syntax to avoid matching docblock text.
-		$save_body = $this->save_elements_body();
+	protected function tearDown(): void {
+		$GLOBALS['_bricks_mcp_test_blocked_meta_keys'] = array();
 
-		$cache_pos  = strpos( $save_body, 'wp_cache_delete(' );
-		$update_pos = strpos( $save_body, 'update_post_meta(' );
-
-		$this->assertNotFalse( $cache_pos, 'save_elements must call wp_cache_delete()' );
-		$this->assertNotFalse( $update_pos, 'save_elements must call update_post_meta()' );
-		$this->assertLessThan( $update_pos, $cache_pos, 'wp_cache_delete() must come before update_post_meta()' );
+		parent::tearDown();
 	}
 
 	/**
-	 * Test that save_elements() has a fallback delete+add path when update returns false.
+	 * A valid two-element tree.
 	 *
-	 * @return void
+	 * @return array<int, array<string, mixed>> Flat element array.
 	 */
-	public function test_save_elements_has_delete_add_fallback(): void {
-		$save_body = $this->save_elements_body();
-
-		$this->assertStringContainsString( 'delete_post_meta', $save_body, 'save_elements must have delete_post_meta fallback' );
-		$this->assertStringContainsString( 'add_post_meta', $save_body, 'save_elements must have add_post_meta fallback' );
-
-		// The fallback should be conditional on update_post_meta returning false.
-		$this->assertMatchesRegularExpression(
-			'/false\s*===\s*\$updated|if\s*\(\s*false\s*===\s*\$updated/',
-			$save_body,
-			'Fallback must be conditioned on update_post_meta returning false'
+	private function elements(): array {
+		return array(
+			array(
+				'id'       => 'aaa111',
+				'name'     => 'section',
+				'parent'   => 0,
+				'children' => array( 'bbb222' ),
+				'settings' => array(),
+			),
+			array(
+				'id'       => 'bbb222',
+				'name'     => 'heading',
+				'parent'   => 'aaa111',
+				'children' => array(),
+				'settings' => array( 'text' => 'Hello' ),
+			),
 		);
 	}
 
 	/**
-	 * Test that save_elements() verifies the write via read-back.
+	 * Create a page and return its ID.
 	 *
-	 * @return void
+	 * @return int Page post ID.
 	 */
-	public function test_save_elements_verifies_write_via_readback(): void {
-		$save_body = $this->save_elements_body();
-
-		// Must read back via get_post_meta after write.
-		$this->assertStringContainsString( 'get_post_meta', $save_body, 'save_elements must read back via get_post_meta for verification' );
-
-		// Must clear cache before verification read.
-		$cache_positions = [];
-		$offset          = 0;
-		while ( false !== ( $pos = strpos( $save_body, 'wp_cache_delete', $offset ) ) ) {
-			$cache_positions[] = $pos;
-			$offset            = $pos + 1;
-		}
-		$this->assertGreaterThanOrEqual( 2, count( $cache_positions ), 'save_elements must call wp_cache_delete at least twice (before write and before verification read)' );
+	private function make_page(): int {
+		return wp_insert_post(
+			array(
+				'post_type'   => 'page',
+				'post_title'  => 'Fixture page',
+				'post_status' => 'publish',
+			)
+		);
 	}
 
 	/**
-	 * Test that save_elements() returns WP_Error on verification failure.
+	 * The recorded meta/cache calls, as "fn:key" strings in order.
+	 *
+	 * @return array<int, string> Recorded calls.
+	 */
+	private function recorded_calls(): array {
+		return array_map(
+			static fn( array $call ): string => $call['fn'] . ':' . $call['key'],
+			$GLOBALS['_bricks_mcp_test_meta_calls'] ?? array()
+		);
+	}
+
+	/**
+	 * Index of the first recorded call matching "fn:key".
+	 *
+	 * @param string $needle Call signature.
+	 * @return int Index, or -1 when absent.
+	 */
+	private function first_call( string $needle ): int {
+		$index = array_search( $needle, $this->recorded_calls(), true );
+
+		return false === $index ? -1 : (int) $index;
+	}
+
+	/**
+	 * Index of the last recorded call matching "fn:key".
+	 *
+	 * @param string $needle Call signature.
+	 * @return int Index, or -1 when absent.
+	 */
+	private function last_call( string $needle ): int {
+		$calls = array_reverse( $this->recorded_calls(), true );
+		$index = array_search( $needle, $calls, true );
+
+		return false === $index ? -1 : (int) $index;
+	}
+
+	// -----------------------------------------------------------------------
+	// The write lands
+	// -----------------------------------------------------------------------
+
+	/**
+	 * A successful save must actually persist the elements.
+	 *
+	 * The baseline the other tests build on: without this, "returns true" proves
+	 * nothing, since returning true is exactly what a silent failure did.
 	 *
 	 * @return void
 	 */
-	public function test_save_elements_returns_wp_error_on_verification_failure(): void {
-		$save_body = $this->save_elements_body();
+	public function test_save_persists_the_elements(): void {
+		$post_id = $this->make_page();
 
-		$this->assertStringContainsString( 'save_elements_failed', $save_body, 'save_elements must return WP_Error with code save_elements_failed on verification failure' );
+		$this->assertTrue( $this->service->save_elements( $post_id, $this->elements() ) );
+		$this->assertSame( $this->elements(), $this->service->get_elements( $post_id ) );
+	}
+
+	/**
+	 * The save must mark the post as using the Bricks editor.
+	 *
+	 * @return void
+	 */
+	public function test_save_marks_the_post_as_a_bricks_page(): void {
+		$post_id = $this->make_page();
+
+		$this->service->save_elements( $post_id, $this->elements() );
+
+		$this->assertTrue( $this->service->is_bricks_page( $post_id ) );
+	}
+
+	// -----------------------------------------------------------------------
+	// Cache clearing — asserted by call order, not source order
+	// -----------------------------------------------------------------------
+
+	/**
+	 * The post_meta cache must be cleared before the write.
+	 *
+	 * Without this, update_post_meta compares against a stale cached value and
+	 * can conclude the value is unchanged when the database disagrees.
+	 *
+	 * @return void
+	 */
+	public function test_cache_is_cleared_before_the_write(): void {
+		$post_id = $this->make_page();
+
+		$GLOBALS['_bricks_mcp_test_meta_calls'] = array();
+
+		$this->service->save_elements( $post_id, $this->elements() );
+
+		$cache_cleared = $this->first_call( 'wp_cache_delete:post_meta' );
+		$written       = $this->first_call( 'update_post_meta:' . BricksService::META_KEY );
+
+		$this->assertGreaterThan( -1, $cache_cleared, 'the post_meta cache must be cleared' );
+		$this->assertGreaterThan( -1, $written, 'the content meta key must be written' );
+		$this->assertLessThan( $written, $cache_cleared, 'the cache must be cleared before the write' );
+	}
+
+	/**
+	 * The cache must be cleared again before the verification read-back.
+	 *
+	 * A read-back served from the cache the write just populated would confirm
+	 * itself and verify nothing.
+	 *
+	 * @return void
+	 */
+	public function test_cache_is_cleared_again_before_the_verification_read(): void {
+		$post_id = $this->make_page();
+
+		$GLOBALS['_bricks_mcp_test_meta_calls'] = array();
+
+		$this->service->save_elements( $post_id, $this->elements() );
+
+		$written           = $this->first_call( 'update_post_meta:' . BricksService::META_KEY );
+		$last_cache_clear  = $this->last_call( 'wp_cache_delete:post_meta' );
+
+		$this->assertGreaterThan(
+			$written,
+			$last_cache_clear,
+			'the cache must be cleared after the write, before reading back to verify'
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// The delete+add fallback
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Re-saving identical elements must still succeed and leave data intact.
+	 *
+	 * update_post_meta() returns false when the new value matches the stored
+	 * one, which is indistinguishable from a failed write. Treating that as an
+	 * error would break every idempotent redeploy.
+	 *
+	 * @return void
+	 */
+	public function test_resaving_identical_elements_still_succeeds(): void {
+		$post_id = $this->make_page();
+
+		$this->assertTrue( $this->service->save_elements( $post_id, $this->elements() ) );
+		$this->assertTrue( $this->service->save_elements( $post_id, $this->elements() ) );
+		$this->assertSame( $this->elements(), $this->service->get_elements( $post_id ) );
+	}
+
+	/**
+	 * The no-op write must be forced through with delete + add.
+	 *
+	 * Asserts the fallback actually ran on the second save, rather than the save
+	 * happening to succeed for some other reason.
+	 *
+	 * @return void
+	 */
+	public function test_identical_write_falls_back_to_delete_then_add(): void {
+		$post_id = $this->make_page();
+
+		$this->service->save_elements( $post_id, $this->elements() );
+
+		$GLOBALS['_bricks_mcp_test_meta_calls'] = array();
+
+		$this->service->save_elements( $post_id, $this->elements() );
+
+		$deleted = $this->first_call( 'delete_post_meta:' . BricksService::META_KEY );
+		$added   = $this->first_call( 'add_post_meta:' . BricksService::META_KEY );
+
+		$this->assertGreaterThan( -1, $deleted, 'a no-op update must fall back to delete_post_meta' );
+		$this->assertGreaterThan( -1, $added, 'a no-op update must fall back to add_post_meta' );
+		$this->assertLessThan( $added, $deleted, 'the delete must precede the add' );
+	}
+
+	/**
+	 * A first save must NOT take the fallback path.
+	 *
+	 * Guards the condition on the fallback. An implementation that always
+	 * deleted and re-added would pass the test above while doing a destructive
+	 * write on every call.
+	 *
+	 * @return void
+	 */
+	public function test_first_save_does_not_use_the_fallback(): void {
+		$post_id = $this->make_page();
+
+		$GLOBALS['_bricks_mcp_test_meta_calls'] = array();
+
+		$this->service->save_elements( $post_id, $this->elements() );
+
+		$this->assertSame(
+			-1,
+			$this->first_call( 'delete_post_meta:' . BricksService::META_KEY ),
+			'a write that succeeded must not be deleted and re-added'
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// Verification
+	// -----------------------------------------------------------------------
+
+	/**
+	 * A write that reports success but does not persist must be an error.
+	 *
+	 * This is the failure the read-back exists for: Bricks' own meta filters can
+	 * reject a programmatic write, leaving the caller with a success response
+	 * and an unchanged page.
+	 *
+	 * @return void
+	 */
+	public function test_write_that_does_not_persist_returns_wp_error(): void {
+		$post_id = $this->make_page();
+
+		$GLOBALS['_bricks_mcp_test_blocked_meta_keys'] = array( BricksService::META_KEY );
+
+		$result = $this->service->save_elements( $post_id, $this->elements() );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'save_elements_failed', $result->get_error_code() );
+	}
+
+	/**
+	 * A partial write must also fail verification.
+	 *
+	 * The read-back compares counts, so storing some elements but not all is
+	 * caught rather than reported as success.
+	 *
+	 * @return void
+	 */
+	public function test_partial_write_fails_verification(): void {
+		$post_id = $this->make_page();
+
+		// Pre-store a single element, then block the write so the read-back sees
+		// the stale one-element array against a two-element save.
+		update_post_meta( $post_id, BricksService::META_KEY, array( $this->elements()[0] ) );
+
+		$GLOBALS['_bricks_mcp_test_blocked_meta_keys'] = array( BricksService::META_KEY );
+
+		$result = $this->service->save_elements( $post_id, $this->elements() );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame( 'save_elements_failed', $result->get_error_code() );
+	}
+
+	// -----------------------------------------------------------------------
+	// Validation gates run before any write
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Broken parent/children linkage must be rejected without writing.
+	 *
+	 * Bricks renders a tree whose links disagree as an empty container rather
+	 * than erroring, so a stored-but-broken tree is worse than a refusal.
+	 *
+	 * @return void
+	 */
+	public function test_broken_linkage_is_rejected_before_writing(): void {
+		$post_id = $this->make_page();
+
+		$broken = array(
+			array(
+				'id'       => 'aaa111',
+				'name'     => 'section',
+				'parent'   => 0,
+				'children' => array( 'nonexistent' ),
+				'settings' => array(),
+			),
+		);
+
+		$result = $this->service->save_elements( $post_id, $broken );
+
+		$this->assertInstanceOf( \WP_Error::class, $result );
+		$this->assertSame(
+			array(),
+			$this->service->get_elements( $post_id ),
+			'a rejected save must not have written anything'
+		);
 	}
 }

@@ -27,11 +27,23 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class UpdateChecker {
 
 	/**
+	 * GitHub repository this build takes its updates from, as "owner/repo".
+	 *
+	 * This MUST match the `Update URI` header in bricks-mcp.php. If it names
+	 * upstream instead of this fork, an upstream release presents as an update
+	 * and overwrites this build. `UpdateUriMatchesReleaseSourceTest` enforces
+	 * the match, because the header is a comment and cannot reference a const.
+	 *
+	 * @var string
+	 */
+	public const GITHUB_REPO = 'COPE-Health-Scholars/bricks-mcp';
+
+	/**
 	 * GitHub Releases API URL for the latest release.
 	 *
 	 * @var string
 	 */
-	private const GITHUB_API_URL = 'https://api.github.com/repos/cristianuibar/bricks-mcp/releases/latest';
+	private const GITHUB_API_URL = 'https://api.github.com/repos/' . self::GITHUB_REPO . '/releases/latest';
 
 	/**
 	 * Transient key for cached update data.

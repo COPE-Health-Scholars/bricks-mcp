@@ -20,7 +20,16 @@
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       bricks-mcp
  * Domain Path:       /languages
- * Update URI:        https://github.com/cristianuibar/bricks-mcp
+ * Update URI:        https://github.com/COPE-Health-Scholars/bricks-mcp
+ */
+
+/*
+ * Fork note: this is a fork of cristianuibar/bricks-mcp, maintained at
+ * COPE-Health-Scholars/bricks-mcp. The Update URI above MUST name the fork —
+ * pointing it at upstream makes an upstream release present as an update to
+ * this build and overwrite it, silently reinstating every bug fixed here.
+ * It is asserted against UpdateChecker::GITHUB_REPO by
+ * tests/Unit/Updates/UpdateUriMatchesReleaseSourceTest.php.
  */
 
 declare(strict_types=1);

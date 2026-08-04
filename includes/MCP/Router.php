@@ -256,7 +256,7 @@ final class Router {
 		 */
 		$this->register_tool(
 			'content',
-			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view)\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
+			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view = detail|summary|visual|structure). Prefer view=structure on a large page: it returns compact index-aligned id/name/parent/settings-hash rows for diffing a live page against locally generated content, where detail and summary run to hundreds of KB and spill to a file\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
 			$this->get_content_tool_schema(),
 			array( $this, 'tool_content' )
 		);
@@ -671,7 +671,10 @@ final class Router {
 				'author'         => array( 'type' => 'integer' ),
 				'featured_image' => array( 'type' => 'integer' ),
 				'label'          => array( 'type' => 'string' ),
-				'view'           => array( 'type' => 'string', 'enum' => array( 'detail', 'summary', 'visual' ) ),
+				'view'           => array(
+					'type' => 'string',
+					'enum' => array( 'detail', 'summary', 'visual', 'structure' ),
+				),
 				'title'          => array( 'type' => 'string' ),
 				'elements'       => array( 'type' => 'array' ),
 				'slug'           => array( 'type' => 'string' ),
@@ -997,6 +1000,7 @@ final class Router {
 				return Response::tool_error( $result );
 			}
 
+			$result          = $this->attach_unrecognized_argument_warning( $result, $arguments, $tool );
 			$result          = $this->format_tool_result( $name, $result, $arguments['response_format'] ?? 'verbose' );
 			$encoded_result  = is_string( $result ) ? $result : wp_json_encode( $result, JSON_PRETTY_PRINT );
 
@@ -1017,6 +1021,85 @@ final class Router {
 				500
 			);
 		}
+	}
+
+	/**
+	 * Find argument keys the tool's schema does not declare.
+	 *
+	 * Deliberately *not* implemented as `additionalProperties: false`. A hard
+	 * rejection would not have caught any of the parameter defects found in this
+	 * codebase's audit — every one of those keys was declared in the schema and
+	 * simply never read by the handler, which a schema-level rule cannot see. It
+	 * would also break callers passing parameters that are now documented. What
+	 * was actually missing was feedback: a mistyped parameter was accepted and
+	 * silently ignored, so the call appeared to succeed while doing something
+	 * else. Reporting the key back covers that without rejecting anything.
+	 *
+	 * @param array<string, mixed> $arguments    Arguments as received.
+	 * @param array<string, mixed> $input_schema The tool's declared input schema.
+	 * @return array<int, string> Undeclared argument names, sorted.
+	 */
+	private function find_unrecognized_arguments( array $arguments, array $input_schema ): array {
+		$properties = $input_schema['properties'] ?? array();
+
+		if ( ! is_array( $properties ) ) {
+			return array();
+		}
+
+		// A tool with no declared properties accepts anything by definition —
+		// there is nothing to compare against, so stay quiet rather than warn
+		// about every argument. `response_format` does not count as a declared
+		// property here: register_tool() injects it into every schema, so a
+		// schema carrying nothing else still declares nothing of its own.
+		$declared = array_diff( array_keys( $properties ), array( 'response_format' ) );
+
+		if ( array() === $declared ) {
+			return array();
+		}
+
+		$unrecognized = array_values( array_diff( array_keys( $arguments ), array_keys( $properties ) ) );
+
+		sort( $unrecognized );
+
+		return $unrecognized;
+	}
+
+	/**
+	 * Append a warning naming any argument the schema did not declare.
+	 *
+	 * @param mixed                $result    The handler's result.
+	 * @param array<string, mixed> $arguments Arguments as received.
+	 * @param array<string, mixed> $tool      The registered tool.
+	 * @return mixed The result, with `warnings` appended when applicable.
+	 */
+	private function attach_unrecognized_argument_warning( mixed $result, array $arguments, array $tool ): mixed {
+		// Only a keyed result has somewhere to put this. Adding a string key to
+		// a list would silently turn it into an object for every caller.
+		if ( ! is_array( $result ) || ( array() !== $result && array_is_list( $result ) ) ) {
+			return $result;
+		}
+
+		$unrecognized = $this->find_unrecognized_arguments( $arguments, $tool['inputSchema'] ?? array() );
+
+		if ( array() === $unrecognized ) {
+			return $result;
+		}
+
+		$warnings = array();
+		if ( isset( $result['warnings'] ) ) {
+			$warnings = is_array( $result['warnings'] ) ? $result['warnings'] : array( $result['warnings'] );
+		}
+
+		$warnings[] = sprintf(
+			/* translators: 1: Comma-separated parameter names, 2: Tool name */
+			__( 'Ignored unrecognized parameter(s): %1$s. The "%2$s" tool does not declare them, so no handler read them — check for a typo, or call tools/list for the current contract.', 'bricks-mcp' ),
+			implode( ', ', $unrecognized ),
+			$tool['name'] ?? 'unknown'
+		);
+
+		$result['warnings'] = $warnings;
+
+		return $result;
 	}
 
 	/**
@@ -1381,7 +1464,7 @@ final class Router {
 		// Page consolidated tool (replaces list_pages, search_pages, get_bricks_content, create_bricks_page, update_bricks_content, update_page, delete_page, duplicate_page, get_page_settings, update_page_settings + SEO).
 		$this->register_tool(
 			'page',
-			__( "Manage pages and Bricks content.\n\nActions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search; optional: post_type, posts_per_page, paged)\n- get: Get page with Bricks element data (requires: post_id; optional: view)\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Update Bricks elements (requires: post_id, elements)\n- update_meta: Update page title/status (requires: post_id; optional: title, status, slug)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, no element payload (requires: post_id, template_id; optional: mode, regenerate_ids)\n- get_settings: Get page settings (requires: post_id)\n- update_settings: Update page settings (requires: post_id, settings)\n- get_seo: Get SEO data from active plugin with audit (requires: post_id)\n- update_seo: Update SEO fields via active plugin (requires: post_id; optional: title, description, robots_noindex, robots_nofollow, canonical, og_title, og_description, og_image, twitter_title, twitter_description, twitter_image, focus_keyword)", 'bricks-mcp' ),
+			__( "Manage pages and Bricks content.\n\nActions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search; optional: post_type, posts_per_page, paged)\n- get: Get page with Bricks element data (requires: post_id; optional: view = detail|summary|visual|structure; structure is the compact diffing view)\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Update Bricks elements (requires: post_id, elements)\n- update_meta: Update page title/status (requires: post_id; optional: title, status, slug)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, no element payload (requires: post_id, template_id; optional: mode, regenerate_ids)\n- get_settings: Get page settings (requires: post_id)\n- update_settings: Update page settings (requires: post_id, settings)\n- get_seo: Get SEO data from active plugin with audit (requires: post_id)\n- update_seo: Update SEO fields via active plugin (requires: post_id; optional: title, description, robots_noindex, robots_nofollow, canonical, og_title, og_description, og_image, twitter_title, twitter_description, twitter_image, focus_keyword)", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
@@ -1434,8 +1517,8 @@ final class Router {
 					),
 					'view'                => array(
 						'type'        => 'string',
-						'enum'        => array( 'detail', 'summary', 'visual' ),
-						'description' => __( 'Detail level (get: visual=layout tree for editing, summary=type counts, detail=full settings)', 'bricks-mcp' ),
+						'enum'        => array( 'detail', 'summary', 'visual', 'structure' ),
+						'description' => __( 'Detail level (get: visual=layout tree for editing, summary=type counts, detail=full settings, structure=compact index-aligned id/name/parent/settings-hash rows for diffing a live page against generated content without reading settings). Prefer structure on large pages: detail and summary run to hundreds of KB on a 950-element page, structure to roughly a tenth of that.', 'bricks-mcp' ),
 					),
 					'title'               => array(
 						'type'        => 'string',
@@ -4106,6 +4189,13 @@ final class Router {
 			return array(
 				'metadata' => $metadata,
 				'visual'   => $this->bricks_service->get_visual_layout( $post_id ),
+			);
+		}
+
+		if ( 'structure' === $view ) {
+			return array(
+				'metadata'  => $metadata,
+				'structure' => $this->bricks_service->get_page_structure( $post_id ),
 			);
 		}
 
@@ -10472,9 +10562,12 @@ final class Router {
 			array( array( 'main' => $template_type ) )
 		);
 
-		// Count elements saved.
-		$saved_content = get_post_meta( $template_id, BRICKS_DB_PAGE_CONTENT, true );
-		$element_count = is_array( $saved_content ) ? count( $saved_content ) : 0;
+		// Count elements saved. Read through get_elements() so the meta key is
+		// resolved from the template type rather than hardcoded: header and
+		// footer templates store content under _bricks_page_header_2 /
+		// _bricks_page_footer_2, and reading BRICKS_DB_PAGE_CONTENT directly
+		// would report 0 elements for those despite a successful save.
+		$element_count = count( $this->bricks_service->get_elements( $template_id ) );
 
 		$result = array(
 			'template_id'         => $template_id,
