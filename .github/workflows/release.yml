@@ -39,12 +39,32 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          # On a tag, the tag IS the version. On a manual dispatch there is no tag, so derive
-          # an unmistakably non-release version rather than stamping the branch name.
+          # On a tag, the tag IS the version. On a manual dispatch there is no tag, so derive one
+          # from the plugin header: bump the patch and mark it a dev build.
+          #
+          # The bump matters. WordPress compares plugin versions with PHP's version_compare, which
+          # treats a "-dev" suffix as a PRE-release — so both 0.0.0-dev.<sha> (the original) and
+          # 1.5.1-dev.<sha> sort BELOW the installed 1.5.1 and install as a downgrade. Bumping the
+          # patch first gives 1.5.2-dev.<sha>, which sorts above 1.5.1 while staying clearly
+          # pre-release relative to a real 1.5.2.
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="0.0.0-dev.$(git rev-parse --short HEAD)"
+            BASE="$(grep -m1 '^ \* Version:' bricks-mcp.php | sed 's/.*Version:[[:space:]]*//' | tr -d '[:space:]')"
+            if [ -z "$BASE" ]; then
+              echo "Could not read the current version from the bricks-mcp.php header" >&2
+              exit 1
+            fi
+            MAJOR="${BASE%%.*}"
+            REST="${BASE#*.}"
+            MINOR="${REST%%.*}"
+            PATCH="${REST#*.}"
+            PATCH="${PATCH%%[^0-9]*}"
+            if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+              echo "Could not parse major.minor.patch from version '$BASE'" >&2
+              exit 1
+            fi
+            VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-dev.$(git rev-parse --short HEAD)"
           fi
           echo "Resolved version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
