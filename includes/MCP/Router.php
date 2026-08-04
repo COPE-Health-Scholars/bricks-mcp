@@ -1373,7 +1373,7 @@ final class Router {
 		// Element consolidated tool (replaces add_element, update_element, remove_element).
 		$this->register_tool(
 			'element',
-			__( "Manage individual Bricks elements on a page.\n\nActions:\n- add: Add element to page (requires: post_id, name; optional: parent_id, position, settings)\n- update: Update element settings (requires: post_id, element_id, settings)\n- remove: Remove element from page (requires: post_id, element_id)\n- get_conditions: Get element visibility conditions (requires: post_id, element_id)\n- set_conditions: Set element visibility conditions (requires: post_id, element_id, conditions)\n- move: Move/reorder element within page (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update settings on multiple elements (requires: post_id, updates)", 'bricks-mcp' ),
+			__( "Manage individual Bricks elements on a page.\n\nActions:\n- add: Add element to page (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update element settings and/or rename it (requires: post_id, element_id, and at least one of settings or label)\n- remove: Remove element from page (requires: post_id, element_id)\n- get_conditions: Get element visibility conditions (requires: post_id, element_id)\n- set_conditions: Set element visibility conditions (requires: post_id, element_id, conditions)\n- move: Move/reorder element within page (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update settings on multiple elements (requires: post_id, updates)", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
@@ -1400,7 +1400,11 @@ final class Router {
 					),
 					'settings'         => array(
 						'type'        => 'object',
-						'description' => __( 'Element settings (add: optional, update: required)', 'bricks-mcp' ),
+						'description' => __( 'Element settings (add: optional; update: required unless label is given)', 'bricks-mcp' ),
+					),
+					'label'            => array(
+						'type'        => 'string',
+						'description' => __( 'Custom element name shown in the Bricks structure panel (add, update: optional). Stored as the element\'s top-level "label", NOT as a setting — do not pass _label inside settings, Bricks does not read it. On update, an empty string clears the label back to the default element name.', 'bricks-mcp' ),
 					),
 					'position'         => array(
 						'type'        => 'integer',
@@ -4297,6 +4301,11 @@ final class Router {
 			'settings' => isset( $args['settings'] ) && is_array( $args['settings'] ) ? $args['settings'] : array(),
 		);
 
+		// Structure panel name. Bricks reads a top-level 'label', not settings._label.
+		if ( isset( $args['label'] ) && is_string( $args['label'] ) && '' !== trim( $args['label'] ) ) {
+			$element['label'] = sanitize_text_field( $args['label'] );
+		}
+
 		return $this->bricks_service->add_element( $post_id, $element, $parent_id, $position );
 	}
 
@@ -4320,15 +4329,24 @@ final class Router {
 			return new \WP_Error( 'missing_element_id', __( 'element_id is required. Use get_bricks_content to retrieve element IDs.', 'bricks-mcp' ) );
 		}
 
+		$has_label = isset( $args['label'] ) && is_string( $args['label'] );
+
+		/*
+		 * settings is required only when there is nothing else to change. A rename is a valid
+		 * standalone edit, so a label-only call must not be rejected for omitting settings.
+		 */
 		if ( ! isset( $args['settings'] ) || ! is_array( $args['settings'] ) ) {
-			return new \WP_Error( 'missing_settings', __( 'settings object is required. Provide the settings keys and values to update.', 'bricks-mcp' ) );
+			if ( ! $has_label ) {
+				return new \WP_Error( 'missing_settings', __( 'settings object is required (or provide label to rename the element).', 'bricks-mcp' ) );
+			}
 		}
 
 		$post_id    = (int) $args['post_id'];
 		$element_id = sanitize_text_field( $args['element_id'] );
-		$settings   = $args['settings'];
+		$settings   = isset( $args['settings'] ) && is_array( $args['settings'] ) ? $args['settings'] : array();
+		$label      = $has_label ? sanitize_text_field( $args['label'] ) : null;
 
-		return $this->bricks_service->update_element( $post_id, $element_id, $settings );
+		return $this->bricks_service->update_element( $post_id, $element_id, $settings, $label );
 	}
 
 	/**
@@ -4981,6 +4999,17 @@ final class Router {
 			$args['label'] = $args['name'];
 		}
 
+		/*
+		 * Map 'styles' to 'settings'. The tool schema advertises this payload as 'styles' but
+		 * the create/update handlers read $args['settings'], so before this mapping every
+		 * create and update silently persisted nothing: the unknown key passed validation
+		 * (no schema sets additionalProperties: false), was never read, and the handler fell
+		 * back to an empty array while still reporting success. Upstream issue #35.
+		 */
+		if ( isset( $args['styles'] ) && ! isset( $args['settings'] ) ) {
+			$args['settings'] = $args['styles'];
+		}
+
 		return match ( $action ) {
 			'list'   => $this->tool_list_theme_styles( $args ),
 			'get'    => $this->tool_get_theme_style( $args ),
@@ -5322,10 +5351,50 @@ final class Router {
 			);
 		}
 
+		/*
+		 * The tool schema advertises 'elements' as an optional create param, but
+		 * create_template() only creates the post and its type/settings meta - it never reads
+		 * elements. Templates were therefore created empty while reporting success, with the
+		 * payload silently discarded. Upstream issue #36.
+		 *
+		 * Normalize and validate BEFORE creating the post so a malformed element array fails
+		 * without leaving an orphaned empty template behind.
+		 */
+		$elements = array();
+
+		if ( ! empty( $args['elements'] ) ) {
+			if ( ! is_array( $args['elements'] ) ) {
+				return new \WP_Error(
+					'invalid_elements',
+					__( 'elements must be an array of Bricks elements.', 'bricks-mcp' )
+				);
+			}
+
+			$elements = $this->bricks_service->normalize_elements( $args['elements'] );
+
+			$linkage = $this->bricks_service->validate_element_linkage( $elements );
+			if ( is_wp_error( $linkage ) ) {
+				return $linkage;
+			}
+		}
+
 		$template_id = $this->bricks_service->create_template( $args );
 
 		if ( is_wp_error( $template_id ) ) {
 			return $template_id;
+		}
+
+		/*
+		 * Must run after create_template(): save_elements() resolves the content meta key from
+		 * _bricks_template_type, which create_template() is what sets. Saving earlier would
+		 * write header/footer template content to the wrong key.
+		 */
+		if ( ! empty( $elements ) ) {
+			$saved = $this->bricks_service->save_elements( $template_id, $elements );
+
+			if ( is_wp_error( $saved ) ) {
+				return $saved;
+			}
 		}
 
 		$template_data = $this->bricks_service->get_template_content_data( $template_id );

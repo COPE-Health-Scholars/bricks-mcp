@@ -140,6 +140,16 @@ class ElementNormalizer {
 				'settings' => $sanitized_settings,
 			];
 
+			/*
+			 * Bricks stores a custom element name (the structure panel label) as a top-level
+			 * 'label' key, a sibling of 'settings' - not as settings._label. This whitelist
+			 * previously dropped it, so labels could not be set through any simplified-format
+			 * path. Upstream issue #36.
+			 */
+			if ( isset( $node['label'] ) && is_string( $node['label'] ) && '' !== trim( $node['label'] ) ) {
+				$element['label'] = sanitize_text_field( $node['label'] );
+			}
+
 			$flat[] = $element;
 			foreach ( $child_flat as $child_element ) {
 				$flat[] = $child_element;

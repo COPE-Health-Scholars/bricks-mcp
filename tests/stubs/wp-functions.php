@@ -31,6 +31,10 @@ $GLOBALS['_bricks_mcp_test_settings']         = [];
 $GLOBALS['_bricks_mcp_test_ext_object_cache'] = true;
 $GLOBALS['_bricks_mcp_test_transients']       = [];
 $GLOBALS['_bricks_mcp_test_did_actions']      = [];
+$GLOBALS['_bricks_mcp_test_options']          = [];
+$GLOBALS['_bricks_mcp_test_posts']            = [];
+$GLOBALS['_bricks_mcp_test_meta']             = [];
+$GLOBALS['_bricks_mcp_test_next_post_id']     = 1000;
 
 // ---------------------------------------------------------------------------
 // WP_Error class.
@@ -124,6 +128,11 @@ if ( ! function_exists( 'get_option' ) ) {
 		if ( 'bricks_mcp_settings' === $option ) {
 			return $GLOBALS['_bricks_mcp_test_settings'] ?? $default;
 		}
+		// Generic option store, so code touching arbitrary options (theme styles,
+		// components, ...) can be tested without special-casing each option name.
+		if ( array_key_exists( $option, $GLOBALS['_bricks_mcp_test_options'] ?? [] ) ) {
+			return $GLOBALS['_bricks_mcp_test_options'][ $option ];
+		}
 		return $default;
 	}
 }
@@ -132,8 +141,152 @@ if ( ! function_exists( 'update_option' ) ) {
 	function update_option( string $option, mixed $value ): bool {
 		if ( 'bricks_mcp_settings' === $option ) {
 			$GLOBALS['_bricks_mcp_test_settings'] = $value;
+			return true;
 		}
+		$GLOBALS['_bricks_mcp_test_options'][ $option ] = $value;
 		return true;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// In-memory post + post meta store.
+//
+// Enough of the WordPress post API to exercise the element/template write paths
+// (save_elements, create_template, update_element) behaviourally rather than by
+// inspecting source. Reset per test via bricks_mcp_test_reset_posts().
+// ---------------------------------------------------------------------------
+if ( ! function_exists( 'bricks_mcp_test_reset_posts' ) ) {
+	function bricks_mcp_test_reset_posts(): void {
+		$GLOBALS['_bricks_mcp_test_posts']        = [];
+		$GLOBALS['_bricks_mcp_test_meta']         = [];
+		$GLOBALS['_bricks_mcp_test_next_post_id'] = 1000;
+	}
+}
+
+if ( ! function_exists( 'wp_insert_post' ) ) {
+	function wp_insert_post( array $postarr, bool $wp_error = false ): int {
+		$id = $postarr['ID'] ?? ++$GLOBALS['_bricks_mcp_test_next_post_id'];
+
+		$GLOBALS['_bricks_mcp_test_posts'][ $id ] = array_merge(
+			[
+				'ID'          => $id,
+				'post_type'   => 'post',
+				'post_title'  => '',
+				'post_status' => 'publish',
+				'post_name'   => '',
+			],
+			$postarr,
+			[ 'ID' => $id ]
+		);
+
+		return (int) $id;
+	}
+}
+
+if ( ! function_exists( 'get_post' ) ) {
+	function get_post( mixed $id = null ): ?object {
+		$id = (int) $id;
+		if ( ! isset( $GLOBALS['_bricks_mcp_test_posts'][ $id ] ) ) {
+			return null;
+		}
+		return (object) $GLOBALS['_bricks_mcp_test_posts'][ $id ];
+	}
+}
+
+if ( ! function_exists( 'get_post_type' ) ) {
+	function get_post_type( mixed $id = null ): string|false {
+		$post = get_post( $id );
+		return $post ? (string) $post->post_type : false;
+	}
+}
+
+if ( ! function_exists( 'get_the_title' ) ) {
+	function get_the_title( mixed $id = null ): string {
+		$post = get_post( $id );
+		return $post ? (string) $post->post_title : '';
+	}
+}
+
+if ( ! function_exists( 'get_post_meta' ) ) {
+	function get_post_meta( int $post_id, string $key = '', bool $single = false ): mixed {
+		$all = $GLOBALS['_bricks_mcp_test_meta'][ $post_id ] ?? [];
+
+		if ( '' === $key ) {
+			return $all;
+		}
+		if ( ! array_key_exists( $key, $all ) ) {
+			return $single ? '' : [];
+		}
+		return $single ? $all[ $key ] : [ $all[ $key ] ];
+	}
+}
+
+if ( ! function_exists( 'update_post_meta' ) ) {
+	function update_post_meta( int $post_id, string $key, mixed $value ): bool {
+		$existing = $GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] ?? null;
+
+		// WordPress returns false when the new value is identical to the stored one.
+		// Mirrored so the delete+add fallback in save_elements() is exercised faithfully.
+		if ( null !== $existing && $existing === $value ) {
+			return false;
+		}
+
+		$GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] = $value;
+		return true;
+	}
+}
+
+if ( ! function_exists( 'add_post_meta' ) ) {
+	function add_post_meta( int $post_id, string $key, mixed $value, bool $unique = false ): int|false {
+		if ( $unique && isset( $GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] ) ) {
+			return false;
+		}
+		$GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] = $value;
+		return 1;
+	}
+}
+
+if ( ! function_exists( 'delete_post_meta' ) ) {
+	function delete_post_meta( int $post_id, string $key ): bool {
+		unset( $GLOBALS['_bricks_mcp_test_meta'][ $post_id ][ $key ] );
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_cache_delete' ) ) {
+	function wp_cache_delete( mixed $key, string $group = '' ): bool {
+		unset( $GLOBALS['_bricks_mcp_test_cache'][ "{$group}:{$key}" ] );
+		return true;
+	}
+}
+
+if ( ! function_exists( '_n' ) ) {
+	function _n( string $single, string $plural, int $number, string $domain = 'default' ): string {
+		return 1 === $number ? $single : $plural;
+	}
+}
+
+if ( ! function_exists( '_x' ) ) {
+	function _x( string $text, string $context, string $domain = 'default' ): string {
+		return $text;
+	}
+}
+
+if ( ! function_exists( 'esc_html__' ) ) {
+	function esc_html__( string $text, string $domain = 'default' ): string {
+		return $text;
+	}
+}
+
+if ( ! function_exists( 'sanitize_key' ) ) {
+	function sanitize_key( string $key ): string {
+		return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( $key ) ) ?? '';
+	}
+}
+
+if ( ! function_exists( 'admin_url' ) ) {
+	function admin_url( string $path = '' ): string {
+		return 'http://localhost/wp-admin/' . ltrim( $path, '/' );
 	}
 }
 

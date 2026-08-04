@@ -3348,9 +3348,12 @@ class BricksService {
 	 * @param int                  $post_id    Post ID.
 	 * @param string               $element_id Element ID to update.
 	 * @param array<string, mixed> $settings   Settings to merge with existing.
+	 * @param string|null          $label      Structure panel name (top-level 'label', not a
+	 *                                         setting). Null leaves it untouched; an empty
+	 *                                         string removes it. Default null.
 	 * @return array<string, mixed>|\WP_Error Updated info on success, WP_Error on failure.
 	 */
-	public function update_element( int $post_id, string $element_id, array $settings ): array|\WP_Error {
+	public function update_element( int $post_id, string $element_id, array $settings, ?string $label = null ): array|\WP_Error {
 		$post = get_post( $post_id );
 		if ( ! $post ) {
 			return new \WP_Error(
@@ -3367,7 +3370,22 @@ class BricksService {
 			if ( $element['id'] === $element_id ) {
 				$existing_settings              = isset( $element['settings'] ) && is_array( $element['settings'] ) ? $element['settings'] : [];
 				$elements[ $index ]['settings'] = array_merge( $existing_settings, $settings );
-				$found                          = true;
+
+				/*
+				 * The structure panel name is a top-level 'label', NOT settings._label - putting
+				 * it in settings stores a key Bricks never reads, which is why renaming elements
+				 * appeared to succeed while changing nothing. Upstream issue #36.
+				 * An empty string clears the label back to the element's default name.
+				 */
+				if ( null !== $label ) {
+					if ( '' === trim( $label ) ) {
+						unset( $elements[ $index ]['label'] );
+					} else {
+						$elements[ $index ]['label'] = $label;
+					}
+				}
+
+				$found = true;
 				break;
 			}
 		}
@@ -3392,6 +3410,7 @@ class BricksService {
 		return [
 			'element_id'             => $element_id,
 			'updated_settings_count' => count( $settings ),
+			'label_updated'          => null !== $label,
 		];
 	}
 
