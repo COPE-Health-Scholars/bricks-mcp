@@ -6322,27 +6322,29 @@ class BricksService {
 	}
 
 	/**
-	 * Normalize a variable name to include the -- prefix.
+	 * Normalize a variable name to Bricks' bare (no -- prefix) storage form.
 	 *
-	 * @param string $name Variable name.
-	 * @return string Normalized name (e.g., "--spacing-md").
+	 * Bricks stores global variable names WITHOUT the leading dashes and prepends
+	 * "--" itself when it writes uploads/bricks/css/global-variables.min.css. Storing
+	 * "--spacing-md" therefore emits "----spacing-md" and the variable never resolves,
+	 * so any leading dashes the caller supplied are stripped here.
+	 *
+	 * @param string $name Variable name, with or without a leading "--".
+	 * @return string Bare normalized name (e.g., "spacing-md").
 	 */
 	private function normalize_variable_name( string $name ): string {
 		$name = sanitize_text_field( $name );
 
-		if ( ! str_starts_with( $name, '--' ) ) {
-			$name = '--' . $name;
-		}
-
-		return $name;
+		return ltrim( $name, '-' );
 	}
 
 	/**
 	 * Create a global CSS custom property variable.
 	 *
-	 * Normalizes name to include -- prefix. Validates category if provided.
+	 * Normalizes name to Bricks' bare storage form (leading -- stripped). Validates
+	 * category if provided.
 	 *
-	 * @param string $name        Variable name (e.g., "spacing-md" or "--spacing-md").
+	 * @param string $name        Variable name (e.g., "spacing-md" or "--spacing-md"; stored as "spacing-md").
 	 * @param string $value       CSS value (e.g., "1rem", "clamp(1rem, 2.5vw, 2rem)").
 	 * @param string $category_id Optional category ID.
 	 * @return array<string, mixed>|\WP_Error Created variable or WP_Error on failure.
@@ -6350,7 +6352,7 @@ class BricksService {
 	public function create_global_variable( string $name, string $value, string $category_id = '' ): array|\WP_Error {
 		$normalized_name = $this->normalize_variable_name( $name );
 
-		if ( '--' === $normalized_name ) {
+		if ( '' === $normalized_name ) {
 			return new \WP_Error(
 				'missing_name',
 				__( 'Variable name is required.', 'bricks-mcp' )
@@ -6480,7 +6482,7 @@ class BricksService {
 		if ( isset( $fields['name'] ) ) {
 			$new_name = $this->normalize_variable_name( $fields['name'] );
 
-			if ( '--' === $new_name ) {
+			if ( '' === $new_name ) {
 				return new \WP_Error(
 					'missing_name',
 					__( 'Variable name cannot be empty.', 'bricks-mcp' )
@@ -6490,8 +6492,8 @@ class BricksService {
 			if ( $new_name !== $old_name ) {
 				$variables[ $var_index ]['name'] = $new_name;
 				$rename_warning                  = sprintf(
-					/* translators: %s: Old variable name */
-					__( 'Variable renamed. Existing references to var(%s) in elements and styles will NOT be automatically updated.', 'bricks-mcp' ),
+					/* translators: %s: Old variable name (stored bare, so the CSS reference adds the -- prefix) */
+					__( 'Variable renamed. Existing references to var(--%s) in elements and styles will NOT be automatically updated.', 'bricks-mcp' ),
 					$old_name
 				);
 			}
@@ -6618,8 +6620,8 @@ class BricksService {
 			'id'              => $variable_id,
 			'name'            => $var_name,
 			'note'            => sprintf(
-				/* translators: %s: Variable name */
-				__( 'Existing elements referencing var(%s) will show CSS fallback values.', 'bricks-mcp' ),
+				/* translators: %s: Variable name (stored bare, so the CSS reference adds the -- prefix) */
+				__( 'Existing elements referencing var(--%s) will show CSS fallback values.', 'bricks-mcp' ),
 				$var_name
 			),
 			'css_regenerated' => $css_regenerated,
@@ -6693,7 +6695,7 @@ class BricksService {
 
 			$normalized_name = $this->normalize_variable_name( $def['name'] );
 
-			if ( '--' === $normalized_name ) {
+			if ( '' === $normalized_name ) {
 				$errors[ $index ] = __( 'Empty name after normalization', 'bricks-mcp' );
 				continue;
 			}
