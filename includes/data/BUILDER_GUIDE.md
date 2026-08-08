@@ -1420,11 +1420,13 @@ Use `code:get_page_scripts` with `post_id` to read existing scripts for a page.
 
 ### Element Custom CSS
 
-Elements support `_customCss` in their settings for element-scoped CSS. Use `#brxe-{elementId}` as the selector (NOT `%root%` which only works in the visual editor):
+Elements support `_cssCustom` in their settings for element-scoped CSS. Use `#brxe-{elementId}` as the selector (NOT `%root%` which only works in the visual editor):
 
 ```json
-{"_customCss": "#brxe-abc123 { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }"}
+{"_cssCustom": "#brxe-abc123 { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }"}
 ```
+
+The key is `_cssCustom`. There is no `_customCss` setting in Bricks — an unknown settings key is stored without complaint and never rendered.
 
 ### Important Notes
 

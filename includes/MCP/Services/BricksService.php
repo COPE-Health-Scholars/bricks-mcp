@@ -1593,13 +1593,22 @@ class BricksService {
 			$new_id = $id_generator->generate();
 		} while ( in_array( $new_id, $existing_ids, true ) );
 
+		/*
+		 * The payload is advertised to callers as `styles` but MUST be stored under `settings`.
+		 * Bricks generates global class CSS from `$global_class['settings']` only — see the
+		 * theme's includes/assets.php, which reads 'settings' and has no `styles` fallback. A
+		 * class stored under `styles` is created, appears in the builder, and is applied to
+		 * elements correctly (its name reaches the rendered class attribute) while emitting
+		 * zero CSS. Nothing catches it: the read path echoes back whatever key was written, so
+		 * list/get look right. Same family as the theme-style mapping in Router (issue #35).
+		 */
 		$new_class = [
-			'id'     => $new_id,
-			'name'   => $name,
+			'id'       => $new_id,
+			'name'     => $name,
 			// is_string guard: the design tool's `color` accepts an object for color_palette, so
 			// a non-string can reach here. Fall back to the default rather than fatal.
-			'color'  => isset( $args['color'] ) && is_string( $args['color'] ) ? sanitize_text_field( $args['color'] ) : '#686868',
-			'styles' => $this->sanitize_styles_array( $args['styles'] ?? [] ),
+			'color'    => isset( $args['color'] ) && is_string( $args['color'] ) ? sanitize_text_field( $args['color'] ) : '#686868',
+			'settings' => $this->sanitize_styles_array( $args['styles'] ?? [] ),
 		];
 
 		if ( ! empty( $args['category'] ) ) {
@@ -1673,10 +1682,20 @@ class BricksService {
 
 			if ( isset( $args['styles'] ) ) {
 				$sanitized_styles = $this->sanitize_styles_array( $args['styles'] );
+
+				/*
+				 * Repair-on-touch: a class written by an older build of this plugin carries its
+				 * payload under the inert `styles` key (see create_global_class). Adopt it as the
+				 * merge base and drop it, so updating such a class fixes it instead of leaving a
+				 * second, shadowed copy of the styles behind.
+				 */
+				$existing = $class['settings'] ?? ( $class['styles'] ?? [] );
+				unset( $class['styles'] );
+
 				if ( ! empty( $args['replace_styles'] ) ) {
-					$class['styles'] = $sanitized_styles;
+					$class['settings'] = $sanitized_styles;
 				} else {
-					$class['styles'] = array_merge( $class['styles'] ?? [], $sanitized_styles );
+					$class['settings'] = array_merge( $existing, $sanitized_styles );
 				}
 			}
 
@@ -1867,11 +1886,12 @@ class BricksService {
 			} while ( in_array( $new_id, $existing_ids, true ) );
 			$existing_ids[] = $new_id;
 
+			// Stored under `settings`, not `styles` — see create_global_class for why.
 			$new_class = [
-				'id'     => $new_id,
-				'name'   => $name,
-				'color'  => isset( $def['color'] ) ? sanitize_text_field( $def['color'] ) : '#686868',
-				'styles' => $def['styles'] ?? [],
+				'id'       => $new_id,
+				'name'     => $name,
+				'color'    => isset( $def['color'] ) ? sanitize_text_field( $def['color'] ) : '#686868',
+				'settings' => $def['styles'] ?? [],
 			];
 
 			if ( ! empty( $def['category'] ) ) {
@@ -4906,9 +4926,12 @@ class BricksService {
 	 * Creates a category with scale config and generates CSS variables
 	 * for each step. Regenerates style manager CSS after creation.
 	 *
+	 * The prefix is accepted in either spelling ("text-" or "--text-") and is stored
+	 * bare, because Bricks prepends "--" itself when it writes the CSS file.
+	 *
 	 * @param string                                         $name            Scale name.
 	 * @param array<int, array{name: string, value: string}> $steps Steps with name and value.
-	 * @param string                                         $prefix          CSS variable prefix (must start with --).
+	 * @param string                                         $prefix          CSS variable prefix, with or without leading dashes ("text-" or "--text-"; stored bare).
 	 * @param array<int, array<string, mixed>>               $utility_classes Utility class configs (optional).
 	 * @return array<string, mixed>|\WP_Error Created scale object or WP_Error on failure.
 	 */
@@ -4922,10 +4945,12 @@ class BricksService {
 			);
 		}
 
-		if ( ! str_starts_with( $prefix, '--' ) ) {
+		$normalized_prefix = $this->normalize_variable_prefix( $prefix );
+
+		if ( '' === $normalized_prefix ) {
 			return new \WP_Error(
 				'invalid_prefix',
-				__( 'CSS variable prefix must start with "--" (e.g., "--text-", "--heading-").', 'bricks-mcp' )
+				__( 'CSS variable prefix is required (e.g., "text-" or "heading-"). A leading "--" is accepted and stripped, so the prefix cannot be dashes alone.', 'bricks-mcp' )
 			);
 		}
 
@@ -4971,8 +4996,7 @@ class BricksService {
 
 		// Default utility classes if empty.
 		if ( empty( $utility_classes ) ) {
-			$class_prefix    = str_replace( '--', '', $prefix );
-			$class_prefix    = rtrim( $class_prefix, '-' );
+			$class_prefix    = rtrim( $normalized_prefix, '-' );
 			$utility_classes = [
 				[
 					'className'   => $class_prefix . '-*',
@@ -4985,7 +5009,7 @@ class BricksService {
 		$new_category = [
 			'id'             => $cat_id,
 			'name'           => $sanitized_name,
-			'scale'          => [ 'prefix' => $prefix ],
+			'scale'          => [ 'prefix' => $normalized_prefix ],
 			'utilityClasses' => $utility_classes,
 		];
 
@@ -5003,7 +5027,7 @@ class BricksService {
 
 			$new_var = [
 				'id'       => $var_id,
-				'name'     => $prefix . sanitize_text_field( $step['name'] ),
+				'name'     => $normalized_prefix . sanitize_text_field( $step['name'] ),
 				'value'    => sanitize_text_field( $step['value'] ),
 				'category' => $cat_id,
 			];
@@ -5021,7 +5045,7 @@ class BricksService {
 		return [
 			'id'              => $cat_id,
 			'name'            => $sanitized_name,
-			'prefix'          => $prefix,
+			'prefix'          => $normalized_prefix,
 			'utility_classes' => $utility_classes,
 			'variables'       => array_map(
 				static fn( array $var ) => [
@@ -5042,10 +5066,13 @@ class BricksService {
 	 * Supports renaming, prefix change (auto-renames existing variables),
 	 * utility class updates, and step add/update/delete operations.
 	 *
+	 * The prefix is accepted in either spelling ("text-" or "--text-") and is stored
+	 * bare, because Bricks prepends "--" itself when it writes the CSS file.
+	 *
 	 * @param string                                $category_id    Scale category ID.
 	 * @param string|null                           $name           New name (null to skip).
 	 * @param array<int, array<string, mixed>>|null $steps        Steps to add/update/delete (null to skip).
-	 * @param string|null                           $prefix         New CSS variable prefix (null to skip).
+	 * @param string|null                           $prefix         New CSS variable prefix, with or without leading dashes (null to skip).
 	 * @param array<int, array<string, mixed>>|null $utility_classes New utility classes (null to skip).
 	 * @return array<string, mixed>|\WP_Error Updated scale object or WP_Error on failure.
 	 */
@@ -5101,23 +5128,42 @@ class BricksService {
 
 		// Update prefix if provided — also rename existing variables.
 		if ( null !== $prefix ) {
-			if ( ! str_starts_with( $prefix, '--' ) ) {
+			$normalized_prefix = $this->normalize_variable_prefix( $prefix );
+
+			if ( '' === $normalized_prefix ) {
 				return new \WP_Error(
 					'invalid_prefix',
-					__( 'CSS variable prefix must start with "--" (e.g., "--text-", "--heading-").', 'bricks-mcp' )
+					__( 'CSS variable prefix is required (e.g., "text-" or "heading-"). A leading "--" is accepted and stripped, so the prefix cannot be dashes alone.', 'bricks-mcp' )
 				);
 			}
 
 			$old_prefix                                  = $categories[ $cat_index ]['scale']['prefix'] ?? '';
-			$categories[ $cat_index ]['scale']['prefix'] = $prefix;
+			$old_prefix_bare                             = $this->normalize_variable_prefix( $old_prefix );
+			$categories[ $cat_index ]['scale']['prefix'] = $normalized_prefix;
 
-			// Rename existing variables for this category.
+			/*
+			 * Rename existing variables for this category. Scales written before the
+			 * bare-storage fix carry a dashed prefix on both the category and the
+			 * variable names, so match either spelling — longest first — and rewrite
+			 * to the normalized form.
+			 */
 			if ( '' !== $old_prefix ) {
 				foreach ( $variables as &$var ) {
-					if ( ( $var['category'] ?? '' ) === $category_id && str_starts_with( $var['name'] ?? '', $old_prefix ) ) {
-						$step_name   = substr( $var['name'], strlen( $old_prefix ) );
-						$var['name'] = $prefix . $step_name;
+					if ( ( $var['category'] ?? '' ) !== $category_id ) {
+						continue;
 					}
+
+					$var_name = $var['name'] ?? '';
+
+					if ( str_starts_with( $var_name, $old_prefix ) ) {
+						$step_name = substr( $var_name, strlen( $old_prefix ) );
+					} elseif ( '' !== $old_prefix_bare && str_starts_with( $var_name, $old_prefix_bare ) ) {
+						$step_name = substr( $var_name, strlen( $old_prefix_bare ) );
+					} else {
+						continue;
+					}
+
+					$var['name'] = $normalized_prefix . $step_name;
 				}
 				unset( $var );
 			}
@@ -5134,7 +5180,9 @@ class BricksService {
 		if ( null !== $steps ) {
 			$id_generator     = new ElementIdGenerator();
 			$existing_var_ids = array_column( $variables, 'id' );
-			$current_prefix   = $categories[ $cat_index ]['scale']['prefix'] ?? '';
+
+			// Normalize on read too, so a scale stored before the fix never gains a doubled name.
+			$current_prefix = $this->normalize_variable_prefix( $categories[ $cat_index ]['scale']['prefix'] ?? '' );
 
 			foreach ( $steps as $step ) {
 				if ( ! empty( $step['id'] ) ) {
@@ -6336,6 +6384,24 @@ class BricksService {
 		$name = sanitize_text_field( $name );
 
 		return ltrim( $name, '-' );
+	}
+
+	/**
+	 * Normalize a typography scale prefix to Bricks' bare storage form.
+	 *
+	 * Scale step variables are stored as prefix + step name in bricks_global_variables,
+	 * so a prefix carrying its own leading dashes produces "--text-sm" and emits
+	 * "----text-sm" once Bricks adds its own "--" — valid CSS that nothing resolves.
+	 * Only leading dashes are stripped: a trailing "-" is a meaningful separator
+	 * between the prefix and the step name and is kept as given.
+	 *
+	 * @param string $prefix Prefix, with or without a leading "--".
+	 * @return string Bare normalized prefix (e.g., "text-").
+	 */
+	private function normalize_variable_prefix( string $prefix ): string {
+		$prefix = sanitize_text_field( $prefix );
+
+		return ltrim( $prefix, '-' );
 	}
 
 	/**

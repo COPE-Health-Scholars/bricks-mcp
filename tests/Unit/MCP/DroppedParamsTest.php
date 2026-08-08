@@ -227,8 +227,9 @@ final class DroppedParamsTest extends TestCase {
 		$scales = $GLOBALS['_bricks_mcp_test_options'] ?? array();
 		$json   = wp_json_encode( $scales );
 
-		$this->assertStringContainsString( '--flat-', (string) $json );
-		$this->assertStringNotContainsString( '--wrapped-', (string) $json );
+		// Prefixes are stored bare — Bricks prepends "--" itself when it writes the CSS.
+		$this->assertStringContainsString( 'flat-', (string) $json );
+		$this->assertStringNotContainsString( 'wrapped-', (string) $json );
 	}
 
 	// -----------------------------------------------------------------------

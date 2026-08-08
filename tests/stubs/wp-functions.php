@@ -588,6 +588,18 @@ if ( ! function_exists( 'sanitize_text_field' ) ) {
 	}
 }
 
+if ( ! function_exists( 'current_time' ) ) {
+	function current_time( string $type, int|bool $gmt = 0 ): string|int {
+		return 'mysql' === $type ? gmdate( 'Y-m-d H:i:s' ) : time();
+	}
+}
+
+if ( ! function_exists( 'get_current_user_id' ) ) {
+	function get_current_user_id(): int {
+		return $GLOBALS['_bricks_mcp_test_current_user_id'] ?? 1;
+	}
+}
+
 if ( ! function_exists( 'absint' ) ) {
 	function absint( mixed $maybeint ): int {
 		return abs( (int) $maybeint );

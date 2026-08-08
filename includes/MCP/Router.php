@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace BricksMCP\MCP;
 
 use BricksMCP\MCP\Services\BricksService;
+use BricksMCP\MCP\Services\CoreFrameworkService;
 use BricksMCP\MCP\Services\ElementIdGenerator;
 use BricksMCP\MCP\Services\MediaService;
 use BricksMCP\MCP\Services\MenuService;
@@ -110,6 +111,13 @@ final class Router {
 	private MenuService $menu_service;
 
 	/**
+	 * Core Framework service instance.
+	 *
+	 * @var CoreFrameworkService
+	 */
+	private CoreFrameworkService $core_framework_service;
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
@@ -117,8 +125,9 @@ final class Router {
 		$this->validation_service = new ValidationService( $this->schema_generator );
 		$this->bricks_service     = new BricksService();
 		$this->bricks_service->set_validation_service( $this->validation_service );
-		$this->media_service = new MediaService();
-		$this->menu_service  = new MenuService();
+		$this->media_service          = new MediaService();
+		$this->menu_service           = new MenuService();
+		$this->core_framework_service = new CoreFrameworkService();
 
 		$this->register_default_tools();
 
@@ -721,12 +730,12 @@ final class Router {
 			'properties' => array(
 				'action'      => array(
 					'type'        => 'string',
-					'enum'        => array( 'list', 'get', 'create', 'update', 'delete', 'apply', 'remove', 'batch_create', 'batch_delete', 'import_css', 'list_categories', 'create_category', 'update_category', 'delete_category', 'export', 'import_json', 'add_color', 'update_color', 'delete_color', 'search', 'get_status', 'get_adobe_fonts', 'update_settings' ),
+					'enum'        => array( 'list', 'get', 'create', 'update', 'delete', 'apply', 'remove', 'batch_create', 'batch_delete', 'batch_update', 'import_css', 'list_categories', 'create_category', 'update_category', 'delete_category', 'export', 'import_json', 'add_color', 'update_color', 'delete_color', 'search', 'get_status', 'get_adobe_fonts', 'update_settings' ),
 					'description' => __( 'Action to perform.', 'bricks-mcp' ),
 				),
 				'domain'      => array(
 					'type'        => 'string',
-					'enum'        => array( 'global_class', 'theme_style', 'typography_scale', 'color_palette', 'global_variable', 'font' ),
+					'enum'        => array( 'global_class', 'theme_style', 'typography_scale', 'color_palette', 'global_variable', 'font', 'core_framework' ),
 					'description' => __( 'Design subsystem to target.', 'bricks-mcp' ),
 				),
 				'class_name'  => array( 'type' => 'string' ),
@@ -778,6 +787,22 @@ final class Router {
 				'disable_google_fonts' => array( 'type' => 'boolean' ),
 				'webfont_loading' => array( 'type' => 'string' ),
 				'custom_fonts_preload' => array( 'type' => 'boolean' ),
+
+				/*
+				 * domain: core_framework. Core Framework tokens are a separate surface from
+				 * Bricks global variables and win on the frontend, because its stylesheet loads
+				 * after Bricks'. `value` above carries the light value; every key below is read
+				 * by tool_core_framework() or the service it calls.
+				 */
+				'token'       => array( 'type' => 'string' ),
+				'tokens'      => array( 'type' => 'array' ),
+				'dark_value'  => array( 'type' => 'string' ),
+				'kind'        => array( 'type' => 'string' ),
+				'group'       => array( 'type' => 'string' ),
+				'section'     => array( 'type' => 'string' ),
+				'gen'         => array( 'type' => 'array' ),
+				'format'      => array( 'type' => 'string' ),
+				'sync_colors_option' => array( 'type' => 'boolean' ),
 			),
 			'required'   => array( 'action', 'domain' ),
 		);
@@ -1833,7 +1858,7 @@ final class Router {
 
 		$this->register_tool(
 			'design',
-			__( "Every call needs a domain plus an action.\n\nDomains and their actions:\n- global_class: list, create, update, delete, apply, remove, batch_create, batch_delete, import_css, import_json, export, list_categories, create_category, delete_category\n- theme_style: list, get, create, update, delete\n- typography_scale: list, create, update, delete\n- color_palette: list, create, update, delete, add_color, update_color, delete_color\n- global_variable: list, create, update, delete, batch_create, batch_delete, search, create_category, update_category, delete_category\n- font: get_status, get_adobe_fonts, update_settings (global font settings only — custom font families have no CRUD here)\n\napply and remove on global_class write element settings, so they return css_file like any other element write.", 'bricks-mcp' ),
+			__( "Every call needs a domain plus an action.\n\nDomains and their actions:\n- global_class: list, create, update, delete, apply, remove, batch_create, batch_delete, import_css, import_json, export, list_categories, create_category, delete_category\n- theme_style: list, get, create, update, delete\n- typography_scale: list, create, update, delete\n- color_palette: list, create, update, delete, add_color, update_color, delete_color\n- global_variable: list, create, update, delete, batch_create, batch_delete, search, create_category, update_category, delete_category\n- font: get_status, get_adobe_fonts, update_settings (global font settings only — custom font families have no CRUD here)\n- core_framework: get_status, list, get, create, update, batch_update, delete — the --cf-* tokens of the Core Framework plugin's active preset, which are NOT Bricks global variables (requires: token, except list/get_status; update also value and/or dark_value; batch_update requires tokens; create requires value, optional kind = color|variable, group, section, gen, format; optional sync_colors_option)\n\napply and remove on global_class write element settings, so they return css_file like any other element write.\n\ncore_framework is a different surface from global_variable and outranks it: Core Framework's stylesheet loads after Bricks' global-variables.min.css, so where a name exists in both the Core Framework value is what renders. Colour tokens carry a light and a dark value and both must be set together. Writes update the preset row but CANNOT recompile core_framework.css — Core Framework builds that file in its browser admin app, so every write returns stylesheet_stale: true and the file must be recompiled from its admin UI before the change is visible.", 'bricks-mcp' ),
 			$this->get_design_tool_schema(),
 			array( $this, 'tool_design' )
 		);
@@ -1986,7 +2011,7 @@ final class Router {
 					),
 					'prefix'          => array(
 						'type'        => 'string',
-						'description' => __( 'CSS variable prefix starting with -- (e.g., "--text-"). Used in create if not inside settings.', 'bricks-mcp' ),
+						'description' => __( 'CSS variable prefix, either spelling accepted (e.g., "text-" or "--text-"); stored bare because Bricks adds the leading "--" itself. Used in create if not inside settings.', 'bricks-mcp' ),
 					),
 					'steps'           => array(
 						'type'        => 'array',
@@ -5283,15 +5308,219 @@ final class Router {
 			'color_palette'    => $this->tool_color_palette( $args ),
 			'global_variable'  => $this->tool_global_variable( $args ),
 			'font'             => $this->tool_font( $args ),
+			'core_framework'   => $this->tool_core_framework( $args ),
 			default            => new \WP_Error(
 				'invalid_domain',
 				sprintf(
 					/* translators: %s: Domain name */
-					__( 'Invalid design domain "%s". Valid domains: global_class, theme_style, typography_scale, color_palette, global_variable, font', 'bricks-mcp' ),
+					__( 'Invalid design domain "%s". Valid domains: global_class, theme_style, typography_scale, color_palette, global_variable, font, core_framework', 'bricks-mcp' ),
 					(string) $domain
 				)
 			),
 		};
+	}
+
+	/**
+	 * Tool: Core Framework token dispatcher — routes to list, get, create, update, delete, batch_update, get_status.
+	 *
+	 * Core Framework is a separate plugin from Bricks and its own REST API is nonce-gated, so an
+	 * application-password client cannot reach it; this domain operates on the same preset row
+	 * in-process instead. Nothing here touches Bricks, so it deliberately does not call
+	 * require_bricks() — the gate is Core Framework's own presence, checked in the service.
+	 *
+	 * @param array<string, mixed> $args Tool arguments including 'action'.
+	 * @return array<string, mixed>|\WP_Error Result data or error.
+	 */
+	public function tool_core_framework( array $args ): array|\WP_Error {
+		$action = $args['action'] ?? '';
+
+		// Param aliasing: `name` is the spelling every other design domain uses for its subject.
+		if ( isset( $args['name'] ) && ! isset( $args['token'] ) ) {
+			$args['token'] = $args['name'];
+		}
+
+		return match ( $action ) {
+			'list'         => $this->tool_list_core_framework_tokens( $args ),
+			'get'          => $this->tool_get_core_framework_token( $args ),
+			'create'       => $this->tool_create_core_framework_token( $args ),
+			'update'       => $this->tool_update_core_framework_token( $args ),
+			'batch_update' => $this->tool_batch_update_core_framework_tokens( $args ),
+			'delete'       => $this->tool_delete_core_framework_token( $args ),
+			'get_status'   => $this->core_framework_service->get_status(),
+			default        => new \WP_Error(
+				'invalid_action',
+				sprintf(
+					/* translators: %s: Action name */
+					__( 'Invalid action "%s". Valid actions: list, get, create, update, batch_update, delete, get_status', 'bricks-mcp' ),
+					(string) $action
+				)
+			),
+		};
+	}
+
+	/**
+	 * Tool: List Core Framework tokens.
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return array<string, mixed>|\WP_Error Token list or error.
+	 */
+	private function tool_list_core_framework_tokens( array $args ): array|\WP_Error {
+		return $this->core_framework_service->list_tokens(
+			(string) ( $args['search'] ?? $args['query'] ?? '' ),
+			(string) ( $args['kind'] ?? '' )
+		);
+	}
+
+	/**
+	 * Tool: Get one Core Framework token.
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return array<string, mixed>|\WP_Error Token data or error.
+	 */
+	private function tool_get_core_framework_token( array $args ): array|\WP_Error {
+		$token = (string) ( $args['token'] ?? '' );
+
+		if ( '' === trim( $token ) ) {
+			return new \WP_Error(
+				'missing_token',
+				__( 'token is required. Provide a token name such as "--cf-darkblue1" (the leading "--" and the preset prefix are both optional).', 'bricks-mcp' )
+			);
+		}
+
+		return $this->core_framework_service->get_token( $token );
+	}
+
+	/**
+	 * Tool: Create a Core Framework token.
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return array<string, mixed>|\WP_Error Creation result or error.
+	 */
+	private function tool_create_core_framework_token( array $args ): array|\WP_Error {
+		$token = (string) ( $args['token'] ?? '' );
+
+		if ( '' === trim( $token ) ) {
+			return new \WP_Error(
+				'missing_token',
+				__( 'token is required. Provide the name to create, e.g. "--cf-navy-deep".', 'bricks-mcp' )
+			);
+		}
+
+		if ( ! isset( $args['value'] ) || '' === $args['value'] ) {
+			return new \WP_Error(
+				'missing_value',
+				__( 'value is required. Provide the light-theme CSS value, e.g. "#0a0e46".', 'bricks-mcp' )
+			);
+		}
+
+		$fields = array( 'value' => $args['value'] );
+
+		foreach ( array( 'dark_value', 'kind', 'group', 'section', 'gen', 'format' ) as $key ) {
+			if ( isset( $args[ $key ] ) ) {
+				$fields[ $key ] = $args[ $key ];
+			}
+		}
+
+		return $this->core_framework_service->create_token(
+			$token,
+			$fields,
+			$this->core_framework_sync_flag( $args )
+		);
+	}
+
+	/**
+	 * Tool: Update a Core Framework token's value(s).
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return array<string, mixed>|\WP_Error Update result or error.
+	 */
+	private function tool_update_core_framework_token( array $args ): array|\WP_Error {
+		$token = (string) ( $args['token'] ?? '' );
+
+		if ( '' === trim( $token ) ) {
+			return new \WP_Error(
+				'missing_token',
+				__( 'token is required. Use action "list" to discover the tokens the active preset defines.', 'bricks-mcp' )
+			);
+		}
+
+		$fields = array();
+
+		if ( isset( $args['value'] ) ) {
+			$fields['value'] = $args['value'];
+		}
+
+		if ( isset( $args['dark_value'] ) ) {
+			$fields['dark_value'] = $args['dark_value'];
+		}
+
+		if ( array() === $fields ) {
+			return new \WP_Error(
+				'no_fields',
+				__( 'At least one of value (light theme) or dark_value (dark theme) is required. Core Framework emits every colour token in both blocks, so a change that sets only one leaves the other on the old value.', 'bricks-mcp' )
+			);
+		}
+
+		return $this->core_framework_service->update_token(
+			$token,
+			$fields,
+			$this->core_framework_sync_flag( $args )
+		);
+	}
+
+	/**
+	 * Tool: Update many Core Framework tokens in one preset write.
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return array<string, mixed>|\WP_Error Batch result or error.
+	 */
+	private function tool_batch_update_core_framework_tokens( array $args ): array|\WP_Error {
+		if ( empty( $args['tokens'] ) || ! is_array( $args['tokens'] ) ) {
+			return new \WP_Error(
+				'missing_tokens',
+				__( 'tokens is required. Provide an array of {token, value, dark_value} objects; they are applied against a single read-modify-write of the preset.', 'bricks-mcp' )
+			);
+		}
+
+		return $this->core_framework_service->batch_update_tokens(
+			$args['tokens'],
+			$this->core_framework_sync_flag( $args )
+		);
+	}
+
+	/**
+	 * Tool: Delete a Core Framework token.
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return array<string, mixed>|\WP_Error Deletion result or error.
+	 */
+	private function tool_delete_core_framework_token( array $args ): array|\WP_Error {
+		$token = (string) ( $args['token'] ?? '' );
+
+		if ( '' === trim( $token ) ) {
+			return new \WP_Error(
+				'missing_token',
+				__( 'token is required. Use action "list" to discover the tokens the active preset defines.', 'bricks-mcp' )
+			);
+		}
+
+		return $this->core_framework_service->delete_token(
+			$token,
+			$this->core_framework_sync_flag( $args )
+		);
+	}
+
+	/**
+	 * Whether to refresh Core Framework's derived colour cache alongside the preset write.
+	 *
+	 * Defaults to true: core_framework_colors is a projection of the preset, and leaving it
+	 * disagreeing with its source is the silent-desync failure this domain exists to avoid.
+	 *
+	 * @param array<string, mixed> $args Tool arguments.
+	 * @return bool True to sync.
+	 */
+	private function core_framework_sync_flag( array $args ): bool {
+		return ! isset( $args['sync_colors_option'] ) || (bool) $args['sync_colors_option'];
 	}
 
 	/**
@@ -6077,7 +6306,9 @@ final class Router {
 			array(
 				'class_name' => $class['name'],
 				'class_id'   => $class['id'],
-				'styles'     => $class['styles'] ?? array(),
+				// Stored under `settings`; `styles` is only the caller-facing spelling. The
+				// fallback reads classes written by older builds under the inert key.
+				'styles'     => $class['settings'] ?? ( $class['styles'] ?? array() ),
 				'applied_to' => $element_ids,
 				'post_id'    => $post_id,
 			)
@@ -6413,7 +6644,8 @@ final class Router {
 			array(
 				'class_name'   => $class['name'],
 				'class_id'     => $class['id'],
-				'styles'       => $class['styles'] ?? array(),
+				// See tool_global_class_apply — `settings` is the stored key.
+				'styles'       => $class['settings'] ?? ( $class['styles'] ?? array() ),
 				'removed_from' => $element_ids,
 				'post_id'      => $post_id,
 			)
@@ -7238,7 +7470,7 @@ final class Router {
 		return array(
 			'scales' => $result,
 			'count'  => count( $result ),
-			'note'   => __( 'Use var(--prefix-step) syntax in typography settings. Scales generate both CSS variables and utility classes.', 'bricks-mcp' ),
+			'note'   => __( 'Prefixes are stored bare (Bricks adds the leading "--" itself), so a scale with prefix "text-" is used as var(--text-sm) in typography settings. Scales generate both CSS variables and utility classes.', 'bricks-mcp' ),
 		);
 	}
 
@@ -7264,7 +7496,7 @@ final class Router {
 		if ( empty( $args['prefix'] ) ) {
 			return new \WP_Error(
 				'missing_prefix',
-				__( 'prefix is required. Provide a CSS variable prefix starting with -- (e.g., "--text-").', 'bricks-mcp' )
+				__( 'prefix is required. Provide a CSS variable prefix in either spelling (e.g., "text-" or "--text-"); it is stored bare because Bricks adds the leading "--" itself.', 'bricks-mcp' )
 			);
 		}
 

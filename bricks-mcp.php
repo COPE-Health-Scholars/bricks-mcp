@@ -11,7 +11,7 @@
  * Plugin Name:       Bricks MCP
  * Plugin URI:        https://aiforbricks.com
  * Description:       AI-powered assistant for Bricks Builder. Control your website with natural language through MCP-compatible AI tools like Claude.
- * Version:           1.5.2
+ * Version:           1.5.3
  * Requires at least: 6.4
  * Requires PHP:      8.2
  * Author:            Uibar Ion-Cristian
@@ -40,7 +40,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Plugin version.
-define( 'BRICKS_MCP_VERSION', '1.5.2' );
+define( 'BRICKS_MCP_VERSION', '1.5.3' );
 
 // Minimum PHP version.
 define( 'BRICKS_MCP_MIN_PHP_VERSION', '8.2' );
