@@ -17,6 +17,7 @@ use BricksMCP\MCP\Services\MediaService;
 use BricksMCP\MCP\Services\MenuService;
 use BricksMCP\MCP\Services\SchemaGenerator;
 use BricksMCP\MCP\Services\ValidationService;
+use BricksMCP\MCP\Services\WPFormsService;
 use BricksMCP\Plugin;
 use BricksMCP\Support\BuilderGuideLocator;
 
@@ -58,6 +59,7 @@ final class Router {
 		'component',
 		'woocommerce',
 		'code',
+		'wpforms',
 	);
 
 	/**
@@ -118,6 +120,13 @@ final class Router {
 	private CoreFrameworkService $core_framework_service;
 
 	/**
+	 * WPForms service instance.
+	 *
+	 * @var WPFormsService
+	 */
+	private WPFormsService $wpforms_service;
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
@@ -128,6 +137,7 @@ final class Router {
 		$this->media_service          = new MediaService();
 		$this->menu_service           = new MenuService();
 		$this->core_framework_service = new CoreFrameworkService();
+		$this->wpforms_service        = new WPFormsService();
 
 		$this->register_default_tools();
 
@@ -270,6 +280,8 @@ final class Router {
 			array( $this, 'tool_content' )
 		);
 
+		$this->register_wpforms_tool();
+
 		/**
 		 * Filter the registered MCP tools.
 		 *
@@ -278,6 +290,77 @@ final class Router {
 		 * @param array $tools Registered tools.
 		 */
 		$this->tools = apply_filters( 'bricks_mcp_tools', $this->tools );
+	}
+
+	/**
+	 * Register the WPForms tool.
+	 *
+	 * Gated on WPForms being installed, the same way the Bricks tools are gated on Bricks: a tool
+	 * that can only ever return "WPForms is not active" is noise in tools/list.
+	 *
+	 * @return void
+	 */
+	private function register_wpforms_tool(): void {
+		if ( ! $this->wpforms_service->is_active() ) {
+			return;
+		}
+
+		$this->register_tool(
+			'wpforms',
+			__( "Read and write WPForms forms.\n\nActions:\n- list: List forms (optional: search, posts_per_page, paged)\n- get: Read a form exactly as stored (requires: form_id; optional: section = all|settings|fields|meta, field_id)\n- update_settings: Deep-merge a patch into form settings (requires: form_id, settings)\n- update_field: Deep-merge a patch into one field (requires: form_id, field_id, properties)\n- delete_entries: Permanently delete entries by ID (requires: entry_ids; WPForms Pro only)\n\nThe two update actions reach what the WPForms editing surface cannot: notifications (recipient, subject, sender_name, sender_address, replyto), notification_enable, honeypot, antispam, ajax_submit, and per-field properties such as a select's placeholder prompt.\n\nMerge semantics: nested objects merge key by key, arrays and scalars replace wholesale, and a null value deletes the key. Read the form first — patches land on live data.\n\nEvery write returns unverified_paths, the patched paths whose stored value came back different from what was sent. A non-empty list means WPForms rewrote or rejected those values, so treat it as the real result rather than trusting updated: true.", 'bricks-mcp' ),
+			array(
+				'type'       => 'object',
+				'properties' => array(
+					'action'         => array(
+						'type'        => 'string',
+						'enum'        => array( 'list', 'get', 'update_settings', 'update_field', 'delete_entries' ),
+						'description' => __( 'Action to perform', 'bricks-mcp' ),
+					),
+					'form_id'        => array(
+						'type'        => 'integer',
+						'description' => __( 'Form ID (get, update_settings, update_field: required)', 'bricks-mcp' ),
+					),
+					'section'        => array(
+						'type'        => 'string',
+						'enum'        => array( 'all', 'settings', 'fields', 'meta' ),
+						'description' => __( 'Which part of the form to return (get: default all)', 'bricks-mcp' ),
+					),
+					'field_id'       => array(
+						'type'        => 'string',
+						'description' => __( 'Field ID as keyed in the form data (update_field: required; get: optional, returns just that field)', 'bricks-mcp' ),
+					),
+					'settings'       => array(
+						'type'                 => 'object',
+						'additionalProperties' => true,
+						'description'          => __( 'Settings patch, deep-merged into stored settings (update_settings: required)', 'bricks-mcp' ),
+					),
+					'properties'     => array(
+						'type'                 => 'object',
+						'additionalProperties' => true,
+						'description'          => __( 'Field property patch, deep-merged into the field (update_field: required)', 'bricks-mcp' ),
+					),
+					'entry_ids'      => array(
+						'type'        => 'array',
+						'items'       => array( 'type' => 'integer' ),
+						'description' => __( 'Entry IDs to delete (delete_entries: required)', 'bricks-mcp' ),
+					),
+					'search'         => array(
+						'type'        => 'string',
+						'description' => __( 'Filter forms by title (list: optional)', 'bricks-mcp' ),
+					),
+					'posts_per_page' => array(
+						'type'        => 'integer',
+						'description' => __( 'Forms per page, max 100 (list: default 20)', 'bricks-mcp' ),
+					),
+					'paged'          => array(
+						'type'        => 'integer',
+						'description' => __( 'Page number, 1-based (list: default 1)', 'bricks-mcp' ),
+					),
+				),
+				'required'   => array( 'action' ),
+			),
+			array( $this, 'tool_wpforms' )
+		);
 	}
 
 	/**
@@ -394,6 +477,7 @@ final class Router {
 			'menu',
 			'component',
 			'design',
+			'wpforms',
 		);
 
 		$open_world_tools = array(
@@ -496,6 +580,15 @@ final class Router {
 					'page'     => 1,
 				),
 			),
+			'wpforms' => array(
+				'list' => array(
+					'posts_per_page' => 20,
+					'paged'          => 1,
+				),
+				'get'  => array(
+					'section' => 'all',
+				),
+			),
 			default => array(),
 		};
 	}
@@ -554,6 +647,7 @@ final class Router {
 			'color_palette'      => 'Manage Bricks color palettes for the current site; requires an action and explicit palette identifiers when writing.',
 			'global_variable'    => 'Manage Bricks global variables for the current site; requires an action and explicit variable identifiers when writing.',
 			'font'               => 'Manage Bricks font settings for the current site; requires an action and updates only explicit font options.',
+			'wpforms'            => 'Read and write WPForms forms on the current site; requires WPForms to be active and an action, and writes merge a patch into live form data.',
 			default              => $description,
 		};
 	}
@@ -1140,6 +1234,7 @@ final class Router {
 			'get_builder_guide',
 			'wordpress', // Per-action checks handled inside tool_wordpress().
 			'content',   // Per-action checks handled inside content dispatcher.
+			'wpforms',   // Per-action checks handled by WPFormsService via wpforms_current_user_can().
 		);
 
 		if ( in_array( $tool_name, $public_tools, true ) ) {
@@ -2482,6 +2577,61 @@ final class Router {
 				sprintf(
 					/* translators: %s: Action name */
 					__( 'Invalid action "%s". Valid actions: get_posts, get_post, get_users, get_plugins', 'bricks-mcp' ),
+					$action
+				)
+			),
+		};
+	}
+
+	/**
+	 * Tool: WPForms dispatcher — routes to list, get, update_settings, update_field, delete_entries.
+	 *
+	 * Capability checks live in WPFormsService, which defers to wpforms_current_user_can() so the
+	 * per-form capability mapping WPForms itself applies is the one enforced here.
+	 *
+	 * @param array<string, mixed> $args Tool arguments including 'action'.
+	 * @return array<string, mixed>|\WP_Error Result data or error.
+	 */
+	public function tool_wpforms( array $args ): array|\WP_Error {
+		if ( ! $this->wpforms_service->is_active() ) {
+			return new \WP_Error(
+				'bricks_mcp_wpforms_inactive',
+				__( 'WPForms must be installed and active to use this tool.', 'bricks-mcp' )
+			);
+		}
+
+		$action = $args['action'] ?? '';
+
+		return match ( $action ) {
+			'list'            => $this->wpforms_service->list_forms(
+				array(
+					'search'         => isset( $args['search'] ) ? (string) $args['search'] : '',
+					'posts_per_page' => $args['posts_per_page'] ?? 20,
+					'paged'          => $args['paged'] ?? 1,
+				)
+			),
+			'get'             => $this->wpforms_service->get_form(
+				isset( $args['form_id'] ) ? (int) $args['form_id'] : 0,
+				isset( $args['section'] ) ? (string) $args['section'] : 'all',
+				isset( $args['field_id'] ) ? (string) $args['field_id'] : ''
+			),
+			'update_settings' => $this->wpforms_service->update_settings(
+				isset( $args['form_id'] ) ? (int) $args['form_id'] : 0,
+				isset( $args['settings'] ) && is_array( $args['settings'] ) ? $args['settings'] : array()
+			),
+			'update_field'    => $this->wpforms_service->update_field(
+				isset( $args['form_id'] ) ? (int) $args['form_id'] : 0,
+				isset( $args['field_id'] ) ? (string) $args['field_id'] : '',
+				isset( $args['properties'] ) && is_array( $args['properties'] ) ? $args['properties'] : array()
+			),
+			'delete_entries'  => $this->wpforms_service->delete_entries(
+				isset( $args['entry_ids'] ) && is_array( $args['entry_ids'] ) ? $args['entry_ids'] : array()
+			),
+			default           => new \WP_Error(
+				'invalid_action',
+				sprintf(
+					/* translators: %s: Action name */
+					__( 'Invalid action "%s". Valid actions: list, get, update_settings, update_field, delete_entries', 'bricks-mcp' ),
 					$action
 				)
 			),

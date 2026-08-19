@@ -22,7 +22,7 @@ The plugin registers a REST API endpoint on your WordPress site that speaks the 
 
 = Available Tools =
 
-The MCP server exposes 11 canonical tools (call `tools/list` for schemas). Legacy names such as `get_bricks_page`, `update_bricks_page`, `search_media`, and `delete_bricks_element` resolve via aliases — prefer canonical names below.
+The MCP server exposes 12 canonical tools (call `tools/list` for schemas). Legacy names such as `get_bricks_page`, `update_bricks_page`, `search_media`, and `delete_bricks_element` resolve via aliases — prefer canonical names below.
 
 * **get_site_info** — Site metadata and connection diagnostics (action: diagnose)
 * **get_builder_guide** — Built-in Bricks builder reference for AI context
@@ -35,6 +35,13 @@ The MCP server exposes 11 canonical tools (call `tools/list` for schemas). Legac
 * **component** — Reusable Bricks components
 * **woocommerce** — WooCommerce Bricks page scaffolds
 * **code** — Page custom CSS and scripts (dangerous_actions required for writes)
+* **wpforms** — WPForms form settings, notification wiring, field properties, and entry deletion (requires WPForms)
+
+The Bricks tools require Bricks Builder; the WordPress-wide tools work without it.
+
+= WPForms =
+
+WPForms only lets its own editing surface change `form_title`, `form_desc` and `submit_text`, and it blocks edits to its post type over REST and XML-RPC. The `wpforms` tool goes through WPForms own save path instead, so notification recipients, honeypot and antispam toggles, select placeholders, and entry cleanup are all reachable. The same four operations also register with the WordPress Abilities API under the `bricks-mcp/` namespace, so an existing abilities client picks them up with no new credential.
 
 All tools are free to use. The plugin is open source and hosted on [GitHub](https://github.com/cristianuibar/bricks-mcp).
 
@@ -108,6 +115,11 @@ Yes, when configured correctly. The plugin enforces WordPress Application Passwo
 3. An AI assistant creating a Bricks Builder hero section from a plain-text prompt.
 
 == Changelog ==
+
+= 1.6.0 =
+* New: wpforms tool — read WPForms forms and write settings, notifications, field properties, and entries through WPForms own save path.
+* New: WPForms operations also register with the WordPress Abilities API under the bricks-mcp/ namespace, inheriting the existing application-password auth and capability gate.
+* Change: the plugin no longer refuses to load without Bricks Builder. The Bricks tools gate themselves; the WordPress-wide tools and abilities stay available.
 
 = 1.5.1 =
 * Fix: save_elements() uses resolve_elements_meta_key() for header/footer templates.

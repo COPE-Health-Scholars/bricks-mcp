@@ -10,12 +10,13 @@ Bricks MCP is a WordPress plugin that implements an [MCP (Model Context Protocol
 
 ## Features
 
-- 11 canonical MCP tools covering the full Bricks Builder data model
+- 12 canonical MCP tools covering the full Bricks Builder data model, plus WPForms
 - Read and write pages, templates, elements, and global settings
 - WooCommerce support (product pages, cart, checkout, account templates)
 - Global classes, theme styles, typography scales, color palettes, variables
 - Media library management with Unsplash integration
 - WordPress menus, fonts, and custom code management
+- WPForms form settings, notification wiring, field properties, and entry cleanup
 - Built-in connection tester and config snippet generator
 - Works with Claude Code, Claude Desktop, Cursor, and other compatible MCP clients
 
@@ -23,7 +24,8 @@ Bricks MCP is a WordPress plugin that implements an [MCP (Model Context Protocol
 
 - WordPress 6.4+
 - PHP 8.2+
-- Bricks Builder 1.6+
+- Bricks Builder 1.6+ for the Bricks tools; the WordPress-wide tools and abilities work without it
+- WPForms (any edition) for the `wpforms` tool; WPForms Pro for entry deletion
 
 ## Installation
 
@@ -83,6 +85,62 @@ ChatGPT is not currently supported as an MCP client for this plugin. ChatGPT's M
 | `component` | Bricks component (reusable element) management |
 | `woocommerce` | WooCommerce page templates and product layouts |
 | `code` | Page-level CSS and JavaScript |
+| `wpforms` | Read WPForms forms and write settings, notifications, field properties, and entries |
+
+## WPForms
+
+WPForms exposes its own abilities for AI clients, but its editing ability accepts only
+`form_title`, `form_desc` and `submit_text`. Everything else is readable and unwritable, and the
+usual workarounds are closed: the REST and XML-RPC post routes return 401 on the `wpforms` post
+type even for an administrator who authored the form, so no role, capability or firewall change
+opens that lane. WPForms wants writes to go through its own save path.
+
+The `wpforms` tool does exactly that. It reads the stored form data, deep-merges your patch into
+it, and hands the whole structure back to `wpforms()->form->update()` — the same call the form
+builder makes when a human clicks Save. That reaches:
+
+- **Notifications** — `settings.notifications` (recipient, subject, sender name, sender address,
+  reply-to) and `notification_enable`
+- **Spam and submission toggles** — `honeypot`, `antispam`, `ajax_submit`
+- **Field properties** — including a select's `placeholder` prompt, which the WPForms field
+  schema does not expose
+- **Entries** — deleting test submissions by ID (WPForms Pro, which is what stores entries)
+
+### Merge semantics
+
+Nested objects merge key by key, so patching one notification field leaves its siblings alone.
+Arrays and scalars replace wholesale, so a shorter `choices` list actually shortens the stored
+one. A `null` value deletes the key outright, which is different from emptying it.
+
+Read the form first — patches land on live data:
+
+```
+Read form 1631's settings, then set its notification recipient to forms@example.org
+and turn on the honeypot.
+```
+
+### Verifying a write
+
+Every write returns `unverified_paths`: the patched paths whose stored value came back different
+from what was sent. WPForms sanitises on save, so a non-empty list is not automatically a failure
+— but it is the difference between a write that reported success and a value that is actually
+stored. Treat it as the real result.
+
+### Also available as abilities
+
+The same four operations register with the WordPress Abilities API as
+`bricks-mcp/wpforms-get-form`, `bricks-mcp/wpforms-update-form-settings`,
+`bricks-mcp/wpforms-update-field` and `bricks-mcp/wpforms-delete-entries`. A client already
+talking to the site's abilities surface picks them up with no new credential and no second
+endpoint — they inherit the same application-password authentication and capability gate as the
+abilities WPForms registers for itself. Both routes call the same service, so there is one
+implementation and one set of capability checks behind them.
+
+Capabilities are checked through `wpforms_current_user_can()`, so WPForms' own per-form mapping
+is what applies: `wpforms_view_forms` to read, `wpforms_edit_forms` to write, and
+`wpforms_delete_entries` to delete entries. Over the MCP endpoint these sit behind the server's
+existing `manage_options` gate; over the Abilities API they are the gate, alongside whatever
+authentication the abilities client already passed.
 
 ## Try It Out
 

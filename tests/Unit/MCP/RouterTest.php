@@ -367,17 +367,21 @@ final class RouterTest extends TestCase {
 	}
 
 	/**
-	 * The v2 visible tool surface is intentionally capped at 11 canonical tools.
+	 * The visible tool surface stays a small, deliberate set of consolidated tools.
+	 *
+	 * 11 Bricks and WordPress tools, plus wpforms, which is appended rather than inserted so the
+	 * positions the rest of this test pins do not move.
 	 *
 	 * @return void
 	 */
-	public function test_visible_tool_surface_count_is_11(): void {
+	public function test_visible_tool_surface_is_the_canonical_set(): void {
 		$ref   = new \ReflectionClass( Router::class );
 		$names = $ref->getConstant( 'VISIBLE_TOOL_NAMES' );
 
-		$this->assertCount( 11, $names );
+		$this->assertCount( 12, $names );
 		$this->assertSame( 'content', $names[3] );
 		$this->assertSame( 'design', $names[5] );
+		$this->assertSame( 'wpforms', $names[11] );
 	}
 
 	/**

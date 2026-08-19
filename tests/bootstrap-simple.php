@@ -20,6 +20,18 @@ define( 'BRICKS_MCP_PLUGIN_BASENAME', 'bricks-mcp/bricks-mcp.php' );
 // Load global-namespace WordPress function stubs.
 require_once __DIR__ . '/stubs/wp-functions.php';
 
+/*
+ * Load the WPForms doubles globally rather than from one test file. Router registers the wpforms
+ * tool only when wpforms() exists, so defining it here is what puts that tool in front of the
+ * schema/handler contract tests — which is the whole point of those tests.
+ */
+require_once __DIR__ . '/stubs/wpforms-classes.php';
+bricks_mcp_test_reset_wpforms();
+
+// Abilities API doubles, so the ability registrations can be asserted on.
+require_once __DIR__ . '/stubs/abilities-api.php';
+bricks_mcp_test_reset_abilities();
+
 // Load the autoloader.
 require_once BRICKS_MCP_PLUGIN_DIR . 'includes/Autoloader.php';
 BricksMCP\Autoloader::register();

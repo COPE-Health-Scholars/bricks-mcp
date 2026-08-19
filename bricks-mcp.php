@@ -11,7 +11,7 @@
  * Plugin Name:       Bricks MCP
  * Plugin URI:        https://aiforbricks.com
  * Description:       AI-powered assistant for Bricks Builder. Control your website with natural language through MCP-compatible AI tools like Claude.
- * Version:           1.5.3
+ * Version:           1.6.0
  * Requires at least: 6.4
  * Requires PHP:      8.2
  * Author:            Uibar Ion-Cristian
@@ -40,7 +40,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Plugin version.
-define( 'BRICKS_MCP_VERSION', '1.5.3' );
+define( 'BRICKS_MCP_VERSION', '1.6.0' );
 
 // Minimum PHP version.
 define( 'BRICKS_MCP_MIN_PHP_VERSION', '8.2' );
@@ -135,18 +135,18 @@ function bricks_mcp_bricks_version_notice(): void {
 	if ( ! defined( 'BRICKS_VERSION' ) ) {
 		$message = sprintf(
 			/* translators: %s: Required Bricks version */
-			esc_html__( 'Bricks MCP requires Bricks Builder %s or higher. Bricks Builder is not installed or not activated.', 'bricks-mcp' ),
+			esc_html__( 'Bricks MCP: Bricks Builder %s or higher is not installed or not activated, so the Bricks tools are unavailable. The WordPress-wide tools and abilities are still active.', 'bricks-mcp' ),
 			BRICKS_MCP_MIN_BRICKS_VERSION
 		);
 	} else {
 		$message = sprintf(
 			/* translators: 1: Required Bricks version, 2: Current Bricks version */
-			esc_html__( 'Bricks MCP requires Bricks Builder %1$s or higher. You are running Bricks %2$s. Please upgrade Bricks Builder to use this plugin.', 'bricks-mcp' ),
+			esc_html__( 'Bricks MCP: the Bricks tools require Bricks Builder %1$s or higher and you are running Bricks %2$s, so they are unavailable. The WordPress-wide tools and abilities are still active.', 'bricks-mcp' ),
 			BRICKS_MCP_MIN_BRICKS_VERSION,
 			BRICKS_VERSION
 		);
 	}
-	echo '<div class="notice notice-error"><p>' . esc_html( $message ) . '</p></div>';
+	echo '<div class="notice notice-warning"><p>' . esc_html( $message ) . '</p></div>';
 }
 
 // Check requirements before loading the plugin.
@@ -195,12 +195,18 @@ register_deactivation_hook( __FILE__, 'bricks_mcp_deactivate' );
 /**
  * Initialize the plugin after theme is loaded (Bricks version available).
  *
+ * Bricks is a dependency of the Bricks tools, not of the plugin. The MCP surface also carries
+ * WordPress-wide tools — core reads, media, menus, WPForms — plus the Abilities API registrations,
+ * and none of those need Bricks. Bailing here used to take the whole surface down with it on any
+ * site where Bricks was inactive or being swapped out. The Bricks tools gate themselves:
+ * Router::register_bricks_tools() returns early without \Bricks\Elements, and every Bricks handler
+ * runs require_bricks() first.
+ *
  * @return void
  */
 function bricks_mcp_init(): void {
 	if ( ! bricks_mcp_check_bricks_version() ) {
 		add_action( 'admin_notices', 'bricks_mcp_bricks_version_notice' );
-		return;
 	}
 	BricksMCP\Plugin::get_instance();
 }

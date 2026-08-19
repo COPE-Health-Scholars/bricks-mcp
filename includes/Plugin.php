@@ -52,6 +52,13 @@ final class Plugin {
 	private ?Admin\Settings $admin_settings = null;
 
 	/**
+	 * WPForms abilities instance.
+	 *
+	 * @var Abilities\WPFormsAbilities|null
+	 */
+	private ?Abilities\WPFormsAbilities $wpforms_abilities = null;
+
+	/**
 	 * Get the singleton instance.
 	 *
 	 * @return self The plugin instance.
@@ -106,6 +113,9 @@ final class Plugin {
 		// Initialize MCP server.
 		$this->init_mcp_server();
 
+		// Expose the WordPress-wide operations through the Abilities API as well as MCP.
+		$this->init_abilities();
+
 		// Initialize admin functionality only in admin context.
 		if ( is_admin() ) {
 			$this->init_admin();
@@ -133,6 +143,18 @@ final class Plugin {
 	private function init_mcp_server(): void {
 		$this->mcp_server = new MCP\Server();
 		$this->mcp_server->init();
+	}
+
+	/**
+	 * Initialize WordPress Abilities API registrations.
+	 *
+	 * No-op on a site without the Abilities API; WPFormsAbilities checks for it before hooking.
+	 *
+	 * @return void
+	 */
+	private function init_abilities(): void {
+		$this->wpforms_abilities = new Abilities\WPFormsAbilities();
+		$this->wpforms_abilities->init();
 	}
 
 	/**
