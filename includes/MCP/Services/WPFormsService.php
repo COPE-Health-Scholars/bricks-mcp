@@ -39,27 +39,39 @@ if ( ! defined( 'ABSPATH' ) ) {
  * WPForms service class.
  */
 final class WPFormsService {
+	/*
+	 * These are WPForms capability CATEGORY names, deliberately unprefixed.
+	 *
+	 * wpforms_current_user_can() resolves a category through
+	 * Capabilities::get_category_caps(), whose keys are the short forms below; a category expands
+	 * to the own/others pair that actually sits on the role (view_forms becomes
+	 * wpforms_view_own_forms + wpforms_view_others_forms). Passing the prefixed spelling instead
+	 * skips the category lookup, falls through to a check against the primitive list — which has
+	 * no wpforms_view_forms in it — and returns denied. Administrators never see that, because
+	 * get_first_valid_cap() short-circuits on manage_options before any of it runs, so the bug
+	 * only ever surfaces for a non-admin granted form access through WPForms Access Controls.
+	 */
 
 	/**
-	 * Capability required to read forms.
+	 * Capability category required to read forms.
 	 *
 	 * @var string
 	 */
-	public const CAP_READ = 'wpforms_view_forms';
+	public const CAP_READ = 'view_forms';
 
 	/**
-	 * Capability required to edit forms.
+	 * Capability category required to edit forms.
 	 *
 	 * @var string
 	 */
-	public const CAP_WRITE = 'wpforms_edit_forms';
+	public const CAP_WRITE = 'edit_forms';
 
 	/**
-	 * Capability required to delete entries.
+	 * Capability category required to delete entries.
 	 *
 	 * @var string
 	 */
-	public const CAP_DELETE_ENTRIES = 'wpforms_delete_entries';
+	public const CAP_DELETE_ENTRIES = 'delete_entries';
 
 	/**
 	 * The WPForms form post type.
@@ -67,6 +79,17 @@ final class WPFormsService {
 	 * @var string
 	 */
 	private const POST_TYPE = 'wpforms';
+
+	/**
+	 * Option holding the site-global keyword filter list.
+	 *
+	 * WPForms stores this as a JSON-encoded array of strings — not a serialized array — with
+	 * autoload off. Matching KeywordFilter::OPTION_NAME exactly is what makes a list written here
+	 * the same list the form builder shows and the spam check reads.
+	 *
+	 * @var string
+	 */
+	private const KEYWORDS_OPTION = 'wpforms_keyword_filter_keywords';
 
 	/**
 	 * Whether WPForms is installed and loaded.
@@ -371,6 +394,261 @@ final class WPFormsService {
 	}
 
 	/**
+	 * Read the site-global keyword filter list.
+	 *
+	 * The list is global; the filter that consumes it is a per-form toggle. A long list and every
+	 * form still letting spam through is the normal shape of this problem, which is why the
+	 * result reports both halves.
+	 *
+	 * @return array<string, mixed>|\WP_Error Keyword list or an error.
+	 */
+	public function get_keywords(): array|\WP_Error {
+		$guard = $this->guard( self::CAP_READ );
+		if ( null !== $guard ) {
+			return $guard;
+		}
+
+		$keywords = $this->read_keywords();
+
+		return array(
+			'keywords'   => $keywords,
+			'count'      => count( $keywords ),
+			'is_default' => false === get_option( self::KEYWORDS_OPTION, false ),
+			'option'     => self::KEYWORDS_OPTION,
+		);
+	}
+
+	/**
+	 * Write the site-global keyword filter list.
+	 *
+	 * Defaults to adding, because this list is shared by every form on the site and is usually the
+	 * accumulated record of past spam waves. Replacing it wholesale should be something a caller
+	 * asks for by name, not the behaviour it gets by accident.
+	 *
+	 * @param array<int, string> $keywords Keywords to apply.
+	 * @param string             $mode     One of add, remove or replace.
+	 * @return array<string, mixed>|\WP_Error Result or an error.
+	 */
+	public function update_keywords( array $keywords, string $mode = 'add' ): array|\WP_Error {
+		$guard = $this->guard( self::CAP_WRITE );
+		if ( null !== $guard ) {
+			return $guard;
+		}
+
+		if ( ! in_array( $mode, array( 'add', 'remove', 'replace' ), true ) ) {
+			return new \WP_Error(
+				'bricks_mcp_wpforms_invalid_mode',
+				sprintf(
+					/* translators: %s: Mode name */
+					__( 'Invalid mode "%s". Valid modes: add, remove, replace', 'bricks-mcp' ),
+					$mode
+				)
+			);
+		}
+
+		$incoming = $this->sanitize_keywords( $keywords );
+		if ( array() === $incoming ) {
+			return new \WP_Error(
+				'bricks_mcp_wpforms_no_keywords',
+				__( 'No usable keywords supplied. Pass keywords as an array of non-empty strings.', 'bricks-mcp' )
+			);
+		}
+
+		/*
+		 * Start from get_keywords(), not from the raw option. When the option has never been
+		 * saved, WPForms falls back to five built-in keywords that are live on the site; reading
+		 * the bare option would see nothing there and the first add would silently delete them.
+		 */
+		$existing = $this->read_keywords();
+
+		$updated = match ( $mode ) {
+			'replace' => $incoming,
+			'remove'  => $this->remove_keywords( $existing, $incoming ),
+			default   => array_merge( $existing, $this->new_keywords( $existing, $incoming ) ),
+		};
+
+		$updated = array_values( $updated );
+
+		// WPForms stores JSON, not a serialized array, and keeps the option out of the autoload set.
+		update_option( self::KEYWORDS_OPTION, wp_json_encode( $updated ), 'no' );
+
+		$stored = $this->read_keywords();
+
+		return array(
+			'mode'     => $mode,
+			'keywords' => $stored,
+			'count'    => count( $stored ),
+			'added'    => 'add' === $mode ? array_values( $this->new_keywords( $existing, $incoming ) ) : array(),
+			'removed'  => 'remove' === $mode ? array_values( array_diff( $existing, $updated ) ) : array(),
+			'option'   => self::KEYWORDS_OPTION,
+		);
+	}
+
+	/**
+	 * Report the keyword filter's state across every form, next to the global list.
+	 *
+	 * The failure this exists to catch: the keyword list is site-global but the filter is a
+	 * per-form toggle that ships off, so a site can carry a long, well-tuned list that no new form
+	 * consults. Reading one form's settings cannot show that; reading all of them can.
+	 *
+	 * @return array<string, mixed>|\WP_Error Audit or an error.
+	 */
+	public function spam_audit(): array|\WP_Error {
+		$guard = $this->guard( self::CAP_READ );
+		if ( null !== $guard ) {
+			return $guard;
+		}
+
+		$forms = get_posts(
+			array(
+				'post_type'      => self::POST_TYPE,
+				'post_status'    => 'any',
+				'posts_per_page' => 100,
+				'orderby'        => 'title',
+				'order'          => 'ASC',
+			)
+		);
+
+		$keywords          = $this->read_keywords();
+		$rows              = array();
+		$keyword_filter_on = 0;
+
+		foreach ( $forms as $form ) {
+			$form_data = $this->read_form_data( (int) $form->ID );
+			if ( is_wp_error( $form_data ) ) {
+				continue;
+			}
+
+			$settings  = $form_data['settings'] ?? array();
+			$anti_spam = $settings['anti_spam'] ?? array();
+			$enabled   = ! empty( $anti_spam['keyword_filter']['enable'] );
+
+			$keyword_filter_on += $enabled ? 1 : 0;
+
+			$rows[] = array(
+				'form_id'              => (int) $form->ID,
+				'title'                => (string) $form->post_title,
+				'keyword_filter'       => $enabled,
+				'country_filter'       => ! empty( $anti_spam['country_filter']['enable'] ),
+				'time_limit'           => ! empty( $anti_spam['time_limit']['enable'] ),
+				'antispam_v3'          => ! empty( $settings['antispam_v3'] ),
+				'honeypot'             => ! empty( $settings['honeypot'] ),
+				'store_spam_entries'   => ! empty( $settings['store_spam_entries'] ),
+				'filtering_store_spam' => ! empty( $settings['filtering_store_spam'] ),
+			);
+		}
+
+		return array(
+			'global_keywords'             => $keywords,
+			'global_keyword_count'        => count( $keywords ),
+			'global_keywords_are_default' => false === get_option( self::KEYWORDS_OPTION, false ),
+			'forms'                       => $rows,
+			'form_count'                  => count( $rows ),
+			'keyword_filter_enabled_on'   => $keyword_filter_on,
+			'keyword_filter_disabled_on'  => count( $rows ) - $keyword_filter_on,
+		);
+	}
+
+	/**
+	 * Read the keyword list the site is actually filtering on.
+	 *
+	 * @return array<int, string> Keywords.
+	 */
+	private function read_keywords(): array {
+		/*
+		 * Prefer WPForms' own accessor: it supplies the built-in defaults when the option has
+		 * never been written and applies the wpforms_pro_anti_spam_keyword_filter_get_keywords
+		 * filter, so what comes back is what the spam check will really compare against.
+		 */
+		$filter = $this->component( 'antispam_keyword_filter' );
+		if ( null !== $filter && method_exists( $filter, 'get_keywords' ) ) {
+			return $this->sanitize_keywords( (array) $filter->get_keywords() );
+		}
+
+		$raw = get_option( self::KEYWORDS_OPTION, '' );
+		if ( ! is_string( $raw ) || '' === $raw ) {
+			return array();
+		}
+
+		$decoded = json_decode( $raw, true );
+
+		return is_array( $decoded ) ? $this->sanitize_keywords( $decoded ) : array();
+	}
+
+	/**
+	 * Normalise a keyword list the way WPForms does on save.
+	 *
+	 * @param array<int|string, mixed> $keywords Raw keywords.
+	 * @return array<int, string> Trimmed, de-duplicated, non-empty keywords.
+	 */
+	private function sanitize_keywords( array $keywords ): array {
+		$clean = array();
+		$seen  = array();
+
+		foreach ( $keywords as $keyword ) {
+			if ( ! is_scalar( $keyword ) ) {
+				continue;
+			}
+
+			$keyword = trim( sanitize_text_field( (string) $keyword ) );
+			if ( '' === $keyword ) {
+				continue;
+			}
+
+			/*
+			 * De-duplicate case-insensitively: KeywordFilter::match_keyword() compiles its regex
+			 * with the /i flag, so two spellings that differ only in case are one filter rule and
+			 * storing both just makes the list harder to read.
+			 */
+			$key = strtolower( $keyword );
+			if ( isset( $seen[ $key ] ) ) {
+				continue;
+			}
+
+			$seen[ $key ] = true;
+			$clean[]      = $keyword;
+		}
+
+		return $clean;
+	}
+
+	/**
+	 * The incoming keywords not already present, compared case-insensitively.
+	 *
+	 * @param array<int, string> $existing Existing keywords.
+	 * @param array<int, string> $incoming Incoming keywords.
+	 * @return array<int, string> Keywords that would be new.
+	 */
+	private function new_keywords( array $existing, array $incoming ): array {
+		$have = array_map( 'strtolower', $existing );
+
+		return array_values(
+			array_filter(
+				$incoming,
+				static fn( string $keyword ): bool => ! in_array( strtolower( $keyword ), $have, true )
+			)
+		);
+	}
+
+	/**
+	 * Remove keywords, compared case-insensitively.
+	 *
+	 * @param array<int, string> $existing Existing keywords.
+	 * @param array<int, string> $remove   Keywords to drop.
+	 * @return array<int, string> Remaining keywords.
+	 */
+	private function remove_keywords( array $existing, array $remove ): array {
+		$drop = array_map( 'strtolower', $remove );
+
+		return array_values(
+			array_filter(
+				$existing,
+				static fn( string $keyword ): bool => ! in_array( strtolower( $keyword ), $drop, true )
+			)
+		);
+	}
+
+	/**
 	 * Build the "no such field" error, listing what the form does have.
 	 *
 	 * @param int                  $form_id   Form ID.
@@ -665,6 +943,12 @@ final class WPFormsService {
 			return (bool) wpforms_current_user_can( $cap, $form_id );
 		}
 
-		return current_user_can( $cap );
+		/*
+		 * The constants above are WPForms capability categories, not WordPress capabilities, so
+		 * handing one to current_user_can() would check a cap nobody holds and deny everyone.
+		 * Collapse to manage_options, which is what WPForms Lite's own access class does when
+		 * there is no Access Controls layer to resolve a category against.
+		 */
+		return current_user_can( 'manage_options' );
 	}
 }

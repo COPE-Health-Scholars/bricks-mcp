@@ -187,8 +187,13 @@ final class WPFormsAbilitiesTest extends TestCase {
 	public function test_permission_callbacks_follow_the_wpforms_capability_map(): void {
 		$abilities = $this->register();
 
+		/*
+		 * Keyed on the capability CATEGORY WPForms actually resolves, not the wpforms_-prefixed
+		 * spelling. Getting that wrong denies every non-administrator while looking fine to an
+		 * admin, whose manage_options short-circuits the check entirely.
+		 */
 		$GLOBALS['_bricks_mcp_test_wpforms_can'] = array(
-			'wpforms_edit_forms' => false,
+			\BricksMCP\MCP\Services\WPFormsService::CAP_WRITE => false,
 		);
 
 		$this->assertFalse(

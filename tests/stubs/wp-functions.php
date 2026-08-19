@@ -138,12 +138,14 @@ if ( ! function_exists( 'get_option' ) ) {
 }
 
 if ( ! function_exists( 'update_option' ) ) {
-	function update_option( string $option, mixed $value ): bool {
+	function update_option( string $option, mixed $value, mixed $autoload = null ): bool {
 		if ( 'bricks_mcp_settings' === $option ) {
 			$GLOBALS['_bricks_mcp_test_settings'] = $value;
 			return true;
 		}
 		$GLOBALS['_bricks_mcp_test_options'][ $option ] = $value;
+		// Recorded so a test can assert an option was kept out of the autoload set.
+		$GLOBALS['_bricks_mcp_test_option_autoload'][ $option ] = $autoload;
 		return true;
 	}
 }

@@ -307,14 +307,24 @@ final class Router {
 
 		$this->register_tool(
 			'wpforms',
-			__( "Read and write WPForms forms.\n\nActions:\n- list: List forms (optional: search, posts_per_page, paged)\n- get: Read a form exactly as stored (requires: form_id; optional: section = all|settings|fields|meta, field_id)\n- update_settings: Deep-merge a patch into form settings (requires: form_id, settings)\n- update_field: Deep-merge a patch into one field (requires: form_id, field_id, properties)\n- delete_entries: Permanently delete entries by ID (requires: entry_ids; WPForms Pro only)\n\nThe two update actions reach what the WPForms editing surface cannot: notifications (recipient, subject, sender_name, sender_address, replyto), notification_enable, honeypot, antispam, ajax_submit, and per-field properties such as a select's placeholder prompt.\n\nMerge semantics: nested objects merge key by key, arrays and scalars replace wholesale, and a null value deletes the key. Read the form first — patches land on live data.\n\nEvery write returns unverified_paths, the patched paths whose stored value came back different from what was sent. A non-empty list means WPForms rewrote or rejected those values, so treat it as the real result rather than trusting updated: true.", 'bricks-mcp' ),
+			__( "Read and write WPForms forms.\n\nActions:\n- list: List forms (optional: search, posts_per_page, paged)\n- get: Read a form exactly as stored (requires: form_id; optional: section = all|settings|fields|meta, field_id)\n- update_settings: Deep-merge a patch into form settings (requires: form_id, settings)\n- update_field: Deep-merge a patch into one field (requires: form_id, field_id, properties)\n- delete_entries: Permanently delete entries by ID (requires: entry_ids; WPForms Pro only)\n- get_keywords: Read the site-global spam keyword filter list\n- update_keywords: Add to, remove from, or replace that list (requires: keywords; optional: mode = add|remove|replace, default add)\n- spam_audit: Every form's spam-protection toggles next to the global keyword list\n\nThe two update actions reach what the WPForms editing surface cannot: notifications (recipient, subject, sender_name, sender_address, replyto), notification_enable, honeypot, antispam, ajax_submit, and per-field properties such as a select's placeholder prompt.\n\nSpam protection has two halves that fail independently: the keyword LIST is site-global, while the filter that reads it is the per-form toggle settings.anti_spam.keyword_filter.enable, which ships OFF on new forms. A well-tuned list protects nothing on a form that never switched the filter on — run spam_audit to see which forms those are.\n\nMerge semantics: nested objects merge key by key, arrays and scalars replace wholesale, and a null value deletes the key. Read the form first — patches land on live data.\n\nEvery write returns unverified_paths, the patched paths whose stored value came back different from what was sent. A non-empty list means WPForms rewrote or rejected those values, so treat it as the real result rather than trusting updated: true.", 'bricks-mcp' ),
 			array(
 				'type'       => 'object',
 				'properties' => array(
 					'action'         => array(
 						'type'        => 'string',
-						'enum'        => array( 'list', 'get', 'update_settings', 'update_field', 'delete_entries' ),
+						'enum'        => array( 'list', 'get', 'update_settings', 'update_field', 'delete_entries', 'get_keywords', 'update_keywords', 'spam_audit' ),
 						'description' => __( 'Action to perform', 'bricks-mcp' ),
+					),
+					'keywords'       => array(
+						'type'        => 'array',
+						'items'       => array( 'type' => 'string' ),
+						'description' => __( 'Keywords for the site-global filter list (update_keywords: required)', 'bricks-mcp' ),
+					),
+					'mode'           => array(
+						'type'        => 'string',
+						'enum'        => array( 'add', 'remove', 'replace' ),
+						'description' => __( 'How to apply keywords. replace discards the existing site-global list (update_keywords: default add)', 'bricks-mcp' ),
 					),
 					'form_id'        => array(
 						'type'        => 'integer',
@@ -587,6 +597,9 @@ final class Router {
 				),
 				'get'  => array(
 					'section' => 'all',
+				),
+				'update_keywords' => array(
+					'mode' => 'add',
 				),
 			),
 			default => array(),
@@ -2627,11 +2640,17 @@ final class Router {
 			'delete_entries'  => $this->wpforms_service->delete_entries(
 				isset( $args['entry_ids'] ) && is_array( $args['entry_ids'] ) ? $args['entry_ids'] : array()
 			),
+			'get_keywords'    => $this->wpforms_service->get_keywords(),
+			'update_keywords' => $this->wpforms_service->update_keywords(
+				isset( $args['keywords'] ) && is_array( $args['keywords'] ) ? $args['keywords'] : array(),
+				isset( $args['mode'] ) ? (string) $args['mode'] : 'add'
+			),
+			'spam_audit'      => $this->wpforms_service->spam_audit(),
 			default           => new \WP_Error(
 				'invalid_action',
 				sprintf(
 					/* translators: %s: Action name */
-					__( 'Invalid action "%s". Valid actions: list, get, update_settings, update_field, delete_entries', 'bricks-mcp' ),
+					__( 'Invalid action "%s". Valid actions: list, get, update_settings, update_field, delete_entries, get_keywords, update_keywords, spam_audit', 'bricks-mcp' ),
 					$action
 				)
 			),

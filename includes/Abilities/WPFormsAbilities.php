@@ -302,6 +302,100 @@ final class WPFormsAbilities {
 					isset( $input['entry_ids'] ) && is_array( $input['entry_ids'] ) ? $input['entry_ids'] : array()
 				),
 			),
+
+			'wpforms-get-spam-keywords'    => array(
+				'label'               => __( 'Read the WPForms spam keyword list', 'bricks-mcp' ),
+				'description'         => __( 'Return the site-global WPForms keyword filter list. The list is shared by every form, but the filter that reads it is a per-form toggle, so a populated list does not mean any form is using it.', 'bricks-mcp' ),
+				'input_schema'        => array(
+					'type'       => 'object',
+					'properties' => array(),
+				),
+				'output_schema'       => array(
+					'type'                 => 'object',
+					'additionalProperties' => true,
+				),
+				'meta'                => array(
+					'annotations' => array(
+						'readOnly'    => true,
+						'destructive' => false,
+						'idempotent'  => true,
+					),
+				),
+				// phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- Signature parity; the keyword list is site-global, not per-form.
+				'permission_callback' => static fn( array $input = array() ): bool => $service->current_user_can(
+					WPFormsService::CAP_READ
+				),
+				// phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- Signature parity; the keyword list takes no input.
+				'execute_callback'    => static fn( array $input = array() ): mixed => $service->get_keywords(),
+			),
+
+			'wpforms-update-spam-keywords' => array(
+				'label'               => __( 'Update the WPForms spam keyword list', 'bricks-mcp' ),
+				'description'         => __( 'Add to, remove from, or replace the site-global WPForms keyword filter list. Defaults to adding, because the list is shared by every form and is usually the accumulated record of past spam waves. Matching is case-insensitive but whole-word: a keyword only blocks when it appears as its own word or phrase, never inside a longer word.', 'bricks-mcp' ),
+				'input_schema'        => array(
+					'type'       => 'object',
+					'properties' => array(
+						'keywords' => array(
+							'type'        => 'array',
+							'items'       => array( 'type' => 'string' ),
+							'minItems'    => 1,
+							'description' => __( 'Keywords to apply.', 'bricks-mcp' ),
+						),
+						'mode'     => array(
+							'type'        => 'string',
+							'enum'        => array( 'add', 'remove', 'replace' ),
+							'default'     => 'add',
+							'description' => __( 'How to apply them. replace discards the existing list.', 'bricks-mcp' ),
+						),
+					),
+					'required'   => array( 'keywords' ),
+				),
+				'output_schema'       => array(
+					'type'                 => 'object',
+					'additionalProperties' => true,
+				),
+				'meta'                => array(
+					'annotations' => array(
+						'readOnly'    => false,
+						'destructive' => false,
+						'idempotent'  => true,
+					),
+				),
+				// phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- Signature parity; the keyword list is site-global, not per-form.
+				'permission_callback' => static fn( array $input = array() ): bool => $service->current_user_can(
+					WPFormsService::CAP_WRITE
+				),
+				'execute_callback'    => static fn( array $input = array() ): mixed => $service->update_keywords(
+					isset( $input['keywords'] ) && is_array( $input['keywords'] ) ? $input['keywords'] : array(),
+					isset( $input['mode'] ) ? (string) $input['mode'] : 'add'
+				),
+			),
+
+			'wpforms-spam-audit'           => array(
+				'label'               => __( 'Audit WPForms spam protection', 'bricks-mcp' ),
+				'description'         => __( 'Report every form\'s spam-protection toggles next to the site-global keyword list, so forms whose keyword filter was never switched on are visible at a glance. Reading one form cannot show this: the list is global and the toggle is per-form, and new forms ship with the toggle off.', 'bricks-mcp' ),
+				'input_schema'        => array(
+					'type'       => 'object',
+					'properties' => array(),
+				),
+				'output_schema'       => array(
+					'type'                 => 'object',
+					'additionalProperties' => true,
+				),
+				'meta'                => array(
+					'annotations' => array(
+						'readOnly'    => true,
+						'destructive' => false,
+						'idempotent'  => true,
+					),
+				),
+				// phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- Signature parity; the audit covers every form and takes no input.
+				'permission_callback' => static fn( array $input = array() ): bool => $service->current_user_can(
+					WPFormsService::CAP_READ
+				),
+				// phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- Signature parity; the audit takes no input.
+				'execute_callback'    => static fn( array $input = array() ): mixed => $service->spam_audit(),
+			),
 		);
 	}
 }

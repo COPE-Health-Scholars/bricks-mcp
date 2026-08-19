@@ -28,6 +28,14 @@ function bricks_mcp_test_reset_wpforms(): void {
 	$GLOBALS['_bricks_mcp_test_wpforms_entries']       = array();
 	$GLOBALS['_bricks_mcp_test_wpforms_update_filter'] = null;
 	$GLOBALS['_bricks_mcp_test_wpforms_sent_data']     = null;
+
+	$GLOBALS['_bricks_mcp_test_wpforms_has_keyword_filter'] = true;
+
+	// The keyword list lives in a plain option, so clear it out of the shared option store too.
+	unset(
+		$GLOBALS['_bricks_mcp_test_options']['wpforms_keyword_filter_keywords'],
+		$GLOBALS['_bricks_mcp_test_option_autoload']['wpforms_keyword_filter_keywords']
+	);
 }
 
 /**
@@ -142,6 +150,39 @@ if ( ! class_exists( 'Bricks_MCP_Test_WPForms_Entry_Handler' ) ) {
 	}
 }
 
+if ( ! class_exists( 'Bricks_MCP_Test_WPForms_Keyword_Filter' ) ) {
+	/**
+	 * Stand-in for the Pro KeywordFilter component.
+	 *
+	 * Reproduces the two behaviours the service has to be correct about: the list is stored as
+	 * JSON in a single option, and when that option has never been written WPForms falls back to
+	 * five built-in keywords that are live on the site.
+	 */
+	class Bricks_MCP_Test_WPForms_Keyword_Filter {
+
+		public const OPTION_NAME = 'wpforms_keyword_filter_keywords';
+
+		public const DEFAULT_KEYWORDS = array(
+			'earn extra cash',
+			'free membership',
+			'search engine optimization',
+			'more internet traffic',
+			'click to download',
+		);
+
+		/**
+		 * Read the keyword list.
+		 *
+		 * @return array<int, string> Keywords.
+		 */
+		public function get_keywords(): array {
+			$defaults = wp_json_encode( self::DEFAULT_KEYWORDS );
+
+			return (array) json_decode( (string) get_option( self::OPTION_NAME, $defaults ), true );
+		}
+	}
+}
+
 if ( ! class_exists( 'Bricks_MCP_Test_WPForms' ) ) {
 	/**
 	 * Stand-in for the wpforms() container.
@@ -166,11 +207,16 @@ if ( ! class_exists( 'Bricks_MCP_Test_WPForms' ) ) {
 				return null;
 			}
 
+			if ( 'antispam_keyword_filter' === $name && empty( $GLOBALS['_bricks_mcp_test_wpforms_has_keyword_filter'] ) ) {
+				return null;
+			}
+
 			if ( ! isset( $this->components[ $name ] ) ) {
 				$this->components[ $name ] = match ( $name ) {
-					'form'  => new Bricks_MCP_Test_WPForms_Form_Handler(),
-					'entry' => new Bricks_MCP_Test_WPForms_Entry_Handler(),
-					default => new stdClass(),
+					'form'                    => new Bricks_MCP_Test_WPForms_Form_Handler(),
+					'entry'                   => new Bricks_MCP_Test_WPForms_Entry_Handler(),
+					'antispam_keyword_filter' => new Bricks_MCP_Test_WPForms_Keyword_Filter(),
+					default                   => new stdClass(),
 				};
 			}
 

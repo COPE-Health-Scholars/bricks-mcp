@@ -106,6 +106,51 @@ builder makes when a human clicks Save. That reaches:
   schema does not expose
 - **Entries** — deleting test submissions by ID (WPForms Pro, which is what stores entries)
 
+### Spam protection: global list, per-form switch
+
+WPForms splits keyword filtering in two, and the halves fail independently:
+
+- The **keyword list is site-global**, stored in the `wpforms_keyword_filter_keywords` option as a
+  JSON array (not a serialized one), with autoload off.
+- The **filter that reads it is a per-form toggle**, `settings.anti_spam.keyword_filter.enable`,
+  and new forms ship with it **off**.
+
+So a site can carry a long, well-tuned list that no recently built form consults. Reading one
+form's settings cannot show that. `spam_audit` can:
+
+```
+Run a WPForms spam audit and tell me which forms have the keyword filter switched off.
+```
+
+It returns every form's `keyword_filter`, `country_filter`, `time_limit`, `antispam_v3`,
+`honeypot`, `store_spam_entries` and `filtering_store_spam` alongside the global list and a count
+of how many forms are ignoring it.
+
+`get_keywords` reads the list; `update_keywords` writes it with `mode` = `add` (default), `remove`
+or `replace`. Adding is the default deliberately — the list is shared by every form and is usually
+the accumulated record of past spam waves, so replacing it is something you ask for by name.
+
+One trap the API handles for you: when the option has **never been saved**, WPForms falls back to
+five built-in keywords that are genuinely live on the site. Reading the bare option would see
+nothing there, and a naive first write would delete them. `update_keywords` bases its merge on the
+effective list, so the defaults carry forward.
+
+### What a keyword actually matches
+
+Worth knowing before you pick keywords, because the matching is narrower than it looks. WPForms
+compiles each keyword to `/(?<=^|\W)keyword(?=\W|$)/i`, which means:
+
+- **Case-insensitive** — `corGM`, `CORGM` and `corgm` are one rule, and the API collapses such
+  duplicates for you.
+- **Whole word or phrase only** — a keyword never matches inside a longer word. `corGM` blocks
+  `corGM` and `corGM spam`, but **not** `corGMartin` or `xcorGM`. If the string you're targeting is
+  embedded in a larger token, the keyword filter will not catch it.
+- **Punctuation is literal** — `cutt.ly` matches `cutt.ly/abc` and `https://cutt.ly/abc`, since
+  `/` and `:` are non-word characters on both sides.
+
+It also only scans a subset of fields: `text`, `textarea`, `name`, `email`, `address`, `url` and
+`richtext`. Spam sitting in a select, phone or number field is never keyword-checked.
+
 ### Merge semantics
 
 Nested objects merge key by key, so patching one notification field leaves its siblings alone.
@@ -128,19 +173,22 @@ stored. Treat it as the real result.
 
 ### Also available as abilities
 
-The same four operations register with the WordPress Abilities API as
+The same operations register with the WordPress Abilities API as
 `bricks-mcp/wpforms-get-form`, `bricks-mcp/wpforms-update-form-settings`,
-`bricks-mcp/wpforms-update-field` and `bricks-mcp/wpforms-delete-entries`. A client already
-talking to the site's abilities surface picks them up with no new credential and no second
-endpoint — they inherit the same application-password authentication and capability gate as the
-abilities WPForms registers for itself. Both routes call the same service, so there is one
-implementation and one set of capability checks behind them.
+`bricks-mcp/wpforms-update-field`, `bricks-mcp/wpforms-delete-entries`,
+`bricks-mcp/wpforms-get-spam-keywords`, `bricks-mcp/wpforms-update-spam-keywords` and
+`bricks-mcp/wpforms-spam-audit`. A client already talking to the site's abilities surface picks
+them up with no new credential and no second endpoint — they inherit the same application-password
+authentication and capability gate as the abilities WPForms registers for itself. Both routes call
+the same service, so there is one implementation and one set of capability checks behind them.
 
-Capabilities are checked through `wpforms_current_user_can()`, so WPForms' own per-form mapping
-is what applies: `wpforms_view_forms` to read, `wpforms_edit_forms` to write, and
-`wpforms_delete_entries` to delete entries. Over the MCP endpoint these sit behind the server's
-existing `manage_options` gate; over the Abilities API they are the gate, alongside whatever
-authentication the abilities client already passed.
+Capabilities go through `wpforms_current_user_can()`, so WPForms' own per-form mapping is what
+applies: the `view_forms` category to read, `edit_forms` to write, and `delete_entries` to delete
+entries. Those are WPForms capability *categories*, not WordPress capabilities — each expands to
+the own/others pair that actually sits on the role, so `view_forms` becomes
+`wpforms_view_own_forms` + `wpforms_view_others_forms`. Over the MCP endpoint they sit behind the
+server's existing `manage_options` gate; over the Abilities API they are the gate, alongside
+whatever authentication the abilities client already passed.
 
 ## Try It Out
 

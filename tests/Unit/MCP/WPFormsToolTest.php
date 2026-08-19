@@ -96,11 +96,11 @@ final class WPFormsToolTest extends TestCase {
 
 		$this->assertNotNull( $tool, 'wpforms must reach tools/list when WPForms is active' );
 		$this->assertSame(
-			array( 'list', 'get', 'update_settings', 'update_field', 'delete_entries' ),
+			array( 'list', 'get', 'update_settings', 'update_field', 'delete_entries', 'get_keywords', 'update_keywords', 'spam_audit' ),
 			$tool['inputSchema']['properties']['action']['enum']
 		);
 
-		foreach ( array( 'form_id', 'field_id', 'settings', 'properties', 'entry_ids' ) as $key ) {
+		foreach ( array( 'form_id', 'field_id', 'settings', 'properties', 'entry_ids', 'keywords', 'mode' ) as $key ) {
 			$this->assertArrayHasKey( $key, $tool['inputSchema']['properties'], "wpforms must declare {$key}" );
 		}
 	}
@@ -218,6 +218,52 @@ final class WPFormsToolTest extends TestCase {
 		$this->assertInstanceOf( \WP_Error::class, $result );
 		$this->assertSame( 'invalid_action', $result->get_error_code() );
 		$this->assertStringContainsString( 'update_settings', $result->get_error_message() );
+		$this->assertStringContainsString( 'spam_audit', $result->get_error_message() );
+	}
+
+	/**
+	 * Keyword writes default to adding, so a caller that omits mode cannot wipe the site-global
+	 * list by accident.
+	 *
+	 * @return void
+	 */
+	public function test_keyword_write_defaults_to_add_through_the_dispatcher(): void {
+		$GLOBALS['_bricks_mcp_test_options']['wpforms_keyword_filter_keywords'] = wp_json_encode( array( 'viagra' ) );
+
+		$result = $this->router->tool_wpforms(
+			array(
+				'action'   => 'update_keywords',
+				'keywords' => array( 'corGM' ),
+			)
+		);
+
+		$this->assertSame( 'add', $result['mode'] );
+		$this->assertSame( array( 'viagra', 'corGM' ), $result['keywords'] );
+
+		unset( $GLOBALS['_bricks_mcp_test_options']['wpforms_keyword_filter_keywords'] );
+	}
+
+	/**
+	 * The audit is the only view that shows the global list and the per-form toggles together.
+	 *
+	 * @return void
+	 */
+	public function test_spam_audit_routes_and_reports_both_halves(): void {
+		$GLOBALS['_bricks_mcp_test_get_posts_return'] = array(
+			(object) array(
+				'ID'         => 1631,
+				'post_title' => 'Contact Us',
+			),
+		);
+
+		$result = $this->router->tool_wpforms( array( 'action' => 'spam_audit' ) );
+
+		$this->assertArrayHasKey( 'global_keywords', $result );
+		$this->assertSame( 1, $result['form_count'] );
+		$this->assertFalse( $result['forms'][0]['keyword_filter'] );
+		$this->assertSame( 1, $result['keyword_filter_disabled_on'] );
+
+		$GLOBALS['_bricks_mcp_test_get_posts_return'] = array();
 	}
 
 	/**

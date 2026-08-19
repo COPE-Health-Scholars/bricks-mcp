@@ -35,13 +35,13 @@ The MCP server exposes 12 canonical tools (call `tools/list` for schemas). Legac
 * **component** — Reusable Bricks components
 * **woocommerce** — WooCommerce Bricks page scaffolds
 * **code** — Page custom CSS and scripts (dangerous_actions required for writes)
-* **wpforms** — WPForms form settings, notification wiring, field properties, and entry deletion (requires WPForms)
+* **wpforms** — WPForms form settings, notification wiring, field properties, entry deletion, and the site-global spam keyword list (requires WPForms)
 
 The Bricks tools require Bricks Builder; the WordPress-wide tools work without it.
 
 = WPForms =
 
-WPForms only lets its own editing surface change `form_title`, `form_desc` and `submit_text`, and it blocks edits to its post type over REST and XML-RPC. The `wpforms` tool goes through WPForms own save path instead, so notification recipients, honeypot and antispam toggles, select placeholders, and entry cleanup are all reachable. The same four operations also register with the WordPress Abilities API under the `bricks-mcp/` namespace, so an existing abilities client picks them up with no new credential.
+WPForms only lets its own editing surface change `form_title`, `form_desc` and `submit_text`, and it blocks edits to its post type over REST and XML-RPC. The `wpforms` tool goes through WPForms own save path instead, so notification recipients, honeypot and antispam toggles, select placeholders, and entry cleanup are all reachable. It also covers spam protection, whose two halves fail independently: the keyword LIST is site-global while the filter reading it is a per-form toggle that ships off, so the spam_audit action reports which forms are ignoring your list. The same operations register with the WordPress Abilities API under the `bricks-mcp/` namespace, so an existing abilities client picks them up with no new credential.
 
 All tools are free to use. The plugin is open source and hosted on [GitHub](https://github.com/cristianuibar/bricks-mcp).
 
@@ -120,6 +120,8 @@ Yes, when configured correctly. The plugin enforces WordPress Application Passwo
 * New: wpforms tool — read WPForms forms and write settings, notifications, field properties, and entries through WPForms own save path.
 * New: WPForms operations also register with the WordPress Abilities API under the bricks-mcp/ namespace, inheriting the existing application-password auth and capability gate.
 * Change: the plugin no longer refuses to load without Bricks Builder. The Bricks tools gate themselves; the WordPress-wide tools and abilities stay available.
+* New: wpforms spam surface — get_keywords, update_keywords (add/remove/replace) for the site-global keyword filter list, and spam_audit reporting every form's spam toggles beside it.
+* Fix: WPForms capability checks passed wpforms_-prefixed names to wpforms_current_user_can(), which expects capability categories. Non-administrators granted access through WPForms Access Controls were denied every operation; administrators were unaffected because manage_options short-circuits the check.
 
 = 1.5.1 =
 * Fix: save_elements() uses resolve_elements_meta_key() for header/footer templates.

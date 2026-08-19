@@ -29,12 +29,12 @@ All authenticated MCP access requires `manage_options` at the server gate (see a
 | `get_builder_guide` | None | Read-only reference |
 | `content` (dispatcher) | None at router gate | Per-action checks inside handler (read vs write) |
 | `get_site_info` | `read` | Site metadata and diagnostics |
-| `wpforms` (dispatcher) | None at router gate | Per-action checks inside `WPFormsService`, which defers to `wpforms_current_user_can()`: `wpforms_view_forms` to read, `wpforms_edit_forms` to write, `wpforms_delete_entries` to delete entries |
+| `wpforms` (dispatcher) | None at router gate | Per-action checks inside `WPFormsService`, which defers to `wpforms_current_user_can()`. The values passed are WPForms capability *categories*, not WordPress capabilities: `view_forms` to read, `edit_forms` to write, `delete_entries` to delete entries. Each expands to the own/others pair on the role (`view_forms` → `wpforms_view_own_forms` + `wpforms_view_others_forms`); passing the `wpforms_`-prefixed spelling instead skips the category lookup and denies every non-administrator |
 | All other canonical tools | `manage_options` | Writes and privileged reads (Bricks, templates, media, etc.) |
 
 ### Abilities API surface
 
-The WPForms operations are also registered as WordPress abilities (`bricks-mcp/wpforms-*`). Calls arriving that way do not pass through `Server::check_permissions()` — they are gated by the Abilities API caller (its own application-password authentication and administrator check) plus the per-ability `permission_callback`, which applies the same `wpforms_current_user_can()` checks as the Router path. Both routes end in the same service, so no operation is reachable with fewer capabilities on one route than the other.
+The WPForms operations are also registered as WordPress abilities (`bricks-mcp/wpforms-*`), including the site-global spam keyword list. Calls arriving that way do not pass through `Server::check_permissions()` — they are gated by the Abilities API caller (its own application-password authentication and administrator check) plus the per-ability `permission_callback`, which applies the same `wpforms_current_user_can()` checks as the Router path. Both routes end in the same service, so no operation is reachable with fewer capabilities on one route than the other.
 
 ## Rate Limiting
 
