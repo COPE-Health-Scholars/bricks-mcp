@@ -77,7 +77,7 @@ ChatGPT is not currently supported as an MCP client for this plugin. ChatGPT's M
 | `get_site_info` | Read WordPress site details and run connection diagnostics |
 | `get_builder_guide` | Read the Bricks builder guide before editing content |
 | `bricks` | Manage Bricks builder settings, schema, queries, and references |
-| `content` | Manage WordPress and Bricks content across posts, pages, and elements |
+| `content` | Manage WordPress and Bricks content across posts, pages, elements, and ACF fields |
 | `template` | Manage Bricks templates, conditions, and template taxonomies |
 | `design` | Manage Bricks design tokens across classes, styles, palettes, variables, and fonts |
 | `media` | Upload media, search Unsplash, manage library |

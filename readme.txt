@@ -116,12 +116,18 @@ Yes, when configured correctly. The plugin enforces WordPress Application Passwo
 
 == Changelog ==
 
+= 1.6.2 =
+* Fix: importing hand-authored Bricks content no longer mangles the tree. is_flat_format() required a children key on every element, but old hand-built rows omit it on leaves; one such row flipped a faithful flat export into the nested-format converter, which rerooted every element, reminted every id, and re-sanitized all settings. children is now optional in detection and defaulted to an empty array on passthrough.
+* New: content tool get_acf_fields / set_acf_fields — read and write ACF fields through ACF's own update_field() API. Writing by field key stores both the value and its protected _field reference meta, retiring the duplicate-then-sync workaround; unresolvable field names fail hard instead of writing a value with an empty reference.
+
+= 1.6.1 =
+* New: wpforms spam surface — get_keywords, update_keywords (add/remove/replace) for the site-global keyword filter list, and spam_audit reporting every form's spam toggles beside it.
+* Fix: WPForms capability checks passed wpforms_-prefixed names to wpforms_current_user_can(), which expects capability categories. Non-administrators granted access through WPForms Access Controls were denied every operation; administrators were unaffected because manage_options short-circuits the check.
+
 = 1.6.0 =
 * New: wpforms tool — read WPForms forms and write settings, notifications, field properties, and entries through WPForms own save path.
 * New: WPForms operations also register with the WordPress Abilities API under the bricks-mcp/ namespace, inheriting the existing application-password auth and capability gate.
 * Change: the plugin no longer refuses to load without Bricks Builder. The Bricks tools gate themselves; the WordPress-wide tools and abilities stay available.
-* New: wpforms spam surface — get_keywords, update_keywords (add/remove/replace) for the site-global keyword filter list, and spam_audit reporting every form's spam toggles beside it.
-* Fix: WPForms capability checks passed wpforms_-prefixed names to wpforms_current_user_can(), which expects capability categories. Non-administrators granted access through WPForms Access Controls were denied every operation; administrators were unaffected because manage_options short-circuits the check.
 
 = 1.5.1 =
 * Fix: save_elements() uses resolve_elements_meta_key() for header/footer templates.

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace BricksMCP\MCP;
 
+use BricksMCP\MCP\Services\ACFService;
 use BricksMCP\MCP\Services\BricksService;
 use BricksMCP\MCP\Services\CoreFrameworkService;
 use BricksMCP\MCP\Services\ElementIdGenerator;
@@ -127,6 +128,13 @@ final class Router {
 	private WPFormsService $wpforms_service;
 
 	/**
+	 * ACF service instance.
+	 *
+	 * @var ACFService
+	 */
+	private ACFService $acf_service;
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
@@ -138,6 +146,7 @@ final class Router {
 		$this->menu_service           = new MenuService();
 		$this->core_framework_service = new CoreFrameworkService();
 		$this->wpforms_service        = new WPFormsService();
+		$this->acf_service            = new ACFService();
 
 		$this->register_default_tools();
 
@@ -275,7 +284,7 @@ final class Router {
 		 */
 		$this->register_tool(
 			'content',
-			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view = detail|summary|visual|structure). Prefer view=structure on a large page: it returns compact index-aligned id/name/parent/settings-hash rows for diffing a live page against locally generated content, where detail and summary run to hundreds of KB and spill to a file\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
+			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view = detail|summary|visual|structure). Prefer view=structure on a large page: it returns compact index-aligned id/name/parent/settings-hash rows for diffing a live page against locally generated content, where detail and summary run to hundreds of KB and spill to a file\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n- get_acf_fields / set_acf_fields: ACF custom fields via ACF's own API (requires: post_id; set also fields, an object mapping field keys or names to values). Writing by field key stores both the value and its _field reference meta, which duplication was previously the only way to preserve\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
 			$this->get_content_tool_schema(),
 			array( $this, 'tool_content' )
 		);
@@ -763,7 +772,7 @@ final class Router {
 			'properties' => array(
 				'action'         => array(
 					'type'        => 'string',
-					'enum'        => array( 'get_posts', 'get_post', 'get_users', 'get_plugins', 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo', 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ),
+					'enum'        => array( 'get_posts', 'get_post', 'get_users', 'get_plugins', 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo', 'get_acf_fields', 'set_acf_fields', 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ),
 					'description' => __( 'Action to perform.', 'bricks-mcp' ),
 				),
 				'post_id'        => array( 'type' => 'integer' ),
@@ -795,6 +804,11 @@ final class Router {
 				'elements'       => array( 'type' => 'array' ),
 				'slug'           => array( 'type' => 'string' ),
 				'settings'       => array( 'type' => 'object' ),
+				'fields'         => array(
+					'type'                 => 'object',
+					'additionalProperties' => true,
+					'description'          => __( 'ACF values keyed by field key (field_xxx) or field name (set_acf_fields: required). Keys are safest; a name is resolved to its definition first and fails hard if ACF cannot resolve it.', 'bricks-mcp' ),
+				),
 				'description'    => array( 'type' => 'string' ),
 				'robots_noindex' => array( 'type' => 'boolean' ),
 				'robots_nofollow' => array( 'type' => 'boolean' ),
@@ -2688,6 +2702,10 @@ final class Router {
 			return $this->tool_page( $args );
 		}
 
+		if ( in_array( $action, array( 'get_acf_fields', 'set_acf_fields' ), true ) ) {
+			return $this->tool_acf_fields( $args );
+		}
+
 		if ( in_array( $action, array( 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ), true ) ) {
 			return $this->tool_element( $args );
 		}
@@ -2700,6 +2718,28 @@ final class Router {
 				$action
 			)
 		);
+	}
+
+	/**
+	 * Tool: ACF field operations — routes get_acf_fields and set_acf_fields to the ACF service.
+	 *
+	 * Reached only through tool_content(), whose dispatcher has already required manage_options
+	 * for both actions (neither is in its read allowlist).
+	 *
+	 * @param array<string, mixed> $args Tool arguments including 'action'.
+	 * @return array<string, mixed>|\WP_Error Result data or error.
+	 */
+	private function tool_acf_fields( array $args ): array|\WP_Error {
+		$post_id = isset( $args['post_id'] ) ? (int) $args['post_id'] : 0;
+
+		if ( 'set_acf_fields' === ( $args['action'] ?? '' ) ) {
+			return $this->acf_service->set_fields(
+				$post_id,
+				isset( $args['fields'] ) && is_array( $args['fields'] ) ? $args['fields'] : array()
+			);
+		}
+
+		return $this->acf_service->get_fields( $post_id );
 	}
 
 	/**

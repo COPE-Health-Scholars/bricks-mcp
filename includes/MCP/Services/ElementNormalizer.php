@@ -75,6 +75,17 @@ class ElementNormalizer {
 			return [];
 		}
 		if ( $this->is_flat_format( $input ) ) {
+			/*
+			 * Fill in a missing children key rather than passing the row through bare. To Bricks
+			 * the two spellings mean the same thing (no children), but this plugin's tree-walking
+			 * code (reparenting, moves, structure views) indexes $element['children'] directly and
+			 * would hit undefined-key warnings on old hand-authored rows that never stored it.
+			 */
+			foreach ( $input as $index => $element ) {
+				if ( ! array_key_exists( 'children', $element ) || ! is_array( $element['children'] ) ) {
+					$input[ $index ]['children'] = [];
+				}
+			}
 			return $input;
 		}
 		return $this->simplified_to_flat( $input, $existing_elements );
@@ -82,6 +93,20 @@ class ElementNormalizer {
 
 	/**
 	 * Detect native Bricks flat array format.
+	 *
+	 * 'children' is deliberately NOT required. Old hand-authored Bricks content omits it on leaf
+	 * rows — Bricks itself treats a missing children key as "no children" — and this check runs
+	 * over EVERY element, so a single such row used to flip the verdict for the whole array. The
+	 * entire flat structure was then fed through simplified_to_flat(), which rerooted every
+	 * element (parents discarded), dropped the children arrays (id strings fail its
+	 * is_array($node) check), reminted every id, and re-sanitized all settings. A faithful export
+	 * of a hand-built template came back as N root elements stacked top-to-bottom.
+	 *
+	 * An element with 'id' and 'parent' can only be flat: simplified nested nodes carry neither,
+	 * so requiring those two still separates the formats unambiguously.
+	 *
+	 * @param array<int, mixed> $elements Candidate element array.
+	 * @return bool True when every element is a flat-format row.
 	 */
 	public function is_flat_format( array $elements ): bool {
 		foreach ( $elements as $element ) {
@@ -90,8 +115,7 @@ class ElementNormalizer {
 			}
 			if (
 				! array_key_exists( 'id', $element ) ||
-				! array_key_exists( 'parent', $element ) ||
-				! array_key_exists( 'children', $element )
+				! array_key_exists( 'parent', $element )
 			) {
 				return false;
 			}
