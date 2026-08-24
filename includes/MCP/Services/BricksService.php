@@ -49,6 +49,22 @@ class BricksService {
 	private ?ValidationService $validation_service = null;
 
 	/**
+	 * Page cache service instance.
+	 *
+	 * Optional — when set, per-post writes purge the WP Super Cache pages they invalidate.
+	 *
+	 * @var WPSuperCacheService|null
+	 */
+	private ?WPSuperCacheService $page_cache_service = null;
+
+	/**
+	 * Purge report from the most recent write, or null when none was attempted.
+	 *
+	 * @var array<string, mixed>|null
+	 */
+	private ?array $last_cache_purge = null;
+
+	/**
 	 * Constructor.
 	 *
 	 * Initializes the element normalizer with an ID generator.
@@ -69,6 +85,50 @@ class BricksService {
 	 */
 	public function set_validation_service( ValidationService $service ): void {
 		$this->validation_service = $service;
+	}
+
+	/**
+	 * Set the page cache service.
+	 *
+	 * When set, per-post writes purge the WP Super Cache pages they invalidate. Without it —
+	 * or without WP Super Cache — writes behave exactly as before.
+	 *
+	 * @param WPSuperCacheService $service Page cache service instance.
+	 * @return void
+	 */
+	public function set_page_cache_service( WPSuperCacheService $service ): void {
+		$this->page_cache_service = $service;
+	}
+
+	/**
+	 * Get the page-cache purge report from the most recent write, if any.
+	 *
+	 * Null when no purge was attempted (no service, no WP Super Cache, or a read-only call);
+	 * otherwise the purge_post() report for the last written post.
+	 *
+	 * @return array<string, mixed>|null Purge report.
+	 */
+	public function get_last_cache_purge(): ?array {
+		return $this->last_cache_purge;
+	}
+
+	/**
+	 * Purge the page cache for a post whose rendered output an MCP write just changed.
+	 *
+	 * This is the counterpart of the CSS regeneration next to every call site: the meta writes
+	 * these paths perform fire none of the hooks WP Super Cache purges on, so without this the
+	 * supercache file keeps serving the old markup while post-<id>.min.css is already new.
+	 *
+	 * @param int $post_id The post whose content changed.
+	 * @return void
+	 */
+	private function purge_page_cache( int $post_id ): void {
+		if ( null === $this->page_cache_service || ! $this->page_cache_service->is_active() ) {
+			$this->last_cache_purge = null;
+			return;
+		}
+
+		$this->last_cache_purge = $this->page_cache_service->purge_post( $post_id );
 	}
 
 	/**
@@ -443,8 +503,9 @@ class BricksService {
 	 * @return true|\WP_Error True on success, WP_Error on failure.
 	 */
 	public function save_elements( int $post_id, array $elements ): true|\WP_Error {
-		// Clear any file name recorded by a previous call so an early return cannot report it.
-		$this->last_css_file = null;
+		// Clear evidence recorded by a previous call so an early return cannot report it.
+		$this->last_css_file    = null;
+		$this->last_cache_purge = null;
 
 		// Always run structural linkage validation.
 		$linkage_validation = $this->validate_element_linkage( $elements );
@@ -498,6 +559,9 @@ class BricksService {
 				__( 'Elements appeared to save but verification read-back failed. The database may have rejected the write.', 'bricks-mcp' )
 			);
 		}
+
+		// The write is verified stored; the cached page for this post is now stale.
+		$this->purge_page_cache( $post_id );
 
 		return true;
 	}
@@ -3347,7 +3411,8 @@ class BricksService {
 		 * is used to resolve which sanitize filter to remove, because the new post has no
 		 * _bricks_template_type yet (it arrives during this very loop).
 		 */
-		$this->last_css_file = null;
+		$this->last_css_file    = null;
+		$this->last_cache_purge = null;
 		$this->unhook_bricks_meta_filters( $post_id );
 
 		try {
@@ -3367,6 +3432,9 @@ class BricksService {
 			 * it is published - the same failure mode as the pre-fix programmatic save.
 			 */
 			$this->last_css_file = $this->trigger_css_regeneration( $new_post_id );
+
+			// The duplicate never reaches save_elements(), so purge here for the same reason.
+			$this->purge_page_cache( $new_post_id );
 		} finally {
 			$this->rehook_bricks_meta_filters( $post_id );
 		}
@@ -7269,6 +7337,9 @@ class BricksService {
 
 		update_post_meta( $post_id, $meta_key, $settings );
 
+		// Page settings change rendered output but fire no hook WP Super Cache purges on.
+		$this->purge_page_cache( $post_id );
+
 		// Build warnings.
 		if ( $css_set ) {
 			$warnings[] = __( 'Bricks-first principle: prefer native Bricks elements and classes over custom CSS. Only use custom CSS when the desired result cannot be achieved with Bricks features.', 'bricks-mcp' );
@@ -7487,6 +7558,9 @@ class BricksService {
 			}
 
 			update_post_meta( $template_id, '_bricks_template_settings', $settings );
+
+			// Popup settings change rendered output but fire no hook WP Super Cache purges on.
+			$this->purge_page_cache( $template_id );
 		} finally {
 			$this->rehook_bricks_meta_filters();
 		}
@@ -8013,6 +8087,14 @@ class BricksService {
 					}
 				}
 				break;
+		}
+
+		/*
+		 * SEO metas render into the cached page's head regardless of which provider stored them,
+		 * and none of these writes fire a hook WP Super Cache purges on.
+		 */
+		if ( ! empty( $updated ) ) {
+			$this->purge_page_cache( $post_id );
 		}
 
 		return array(
@@ -8934,6 +9016,9 @@ class BricksService {
 
 		update_post_meta( $post_id, $meta_key, $settings );
 
+		// Custom CSS renders inline into the cached page.
+		$this->purge_page_cache( $post_id );
+
 		return array(
 			'post_id'          => $post_id,
 			'updated'          => true,
@@ -8998,6 +9083,9 @@ class BricksService {
 
 		if ( ! empty( $updated ) ) {
 			update_post_meta( $post_id, $meta_key, $settings );
+
+			// Custom scripts render inline into the cached page.
+			$this->purge_page_cache( $post_id );
 		}
 
 		return array(

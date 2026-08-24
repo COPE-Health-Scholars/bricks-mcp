@@ -36,6 +36,10 @@ bricks_mcp_test_reset_abilities();
 require_once __DIR__ . '/stubs/acf-functions.php';
 bricks_mcp_test_reset_acf();
 
+// WP Super Cache doubles: purge-call recording, so writes can be asserted to invalidate.
+require_once __DIR__ . '/stubs/wpsc-functions.php';
+bricks_mcp_test_reset_wpsc();
+
 // Load the autoloader.
 require_once BRICKS_MCP_PLUGIN_DIR . 'includes/Autoloader.php';
 BricksMCP\Autoloader::register();

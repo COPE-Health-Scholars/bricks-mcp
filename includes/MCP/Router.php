@@ -19,6 +19,7 @@ use BricksMCP\MCP\Services\MenuService;
 use BricksMCP\MCP\Services\SchemaGenerator;
 use BricksMCP\MCP\Services\ValidationService;
 use BricksMCP\MCP\Services\WPFormsService;
+use BricksMCP\MCP\Services\WPSuperCacheService;
 use BricksMCP\Plugin;
 use BricksMCP\Support\BuilderGuideLocator;
 
@@ -135,6 +136,13 @@ final class Router {
 	private ACFService $acf_service;
 
 	/**
+	 * WP Super Cache service instance.
+	 *
+	 * @var WPSuperCacheService
+	 */
+	private WPSuperCacheService $page_cache_service;
+
+	/**
 	 * Constructor.
 	 */
 	public function __construct() {
@@ -147,6 +155,8 @@ final class Router {
 		$this->core_framework_service = new CoreFrameworkService();
 		$this->wpforms_service        = new WPFormsService();
 		$this->acf_service            = new ACFService();
+		$this->page_cache_service     = new WPSuperCacheService();
+		$this->bricks_service->set_page_cache_service( $this->page_cache_service );
 
 		$this->register_default_tools();
 
@@ -284,7 +294,7 @@ final class Router {
 		 */
 		$this->register_tool(
 			'content',
-			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view = detail|summary|visual|structure). Prefer view=structure on a large page: it returns compact index-aligned id/name/parent/settings-hash rows for diffing a live page against locally generated content, where detail and summary run to hundreds of KB and spill to a file\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n- get_acf_fields / set_acf_fields: ACF custom fields via ACF's own API (requires: post_id; set also fields, an object mapping field keys or names to values). Writing by field key stores both the value and its _field reference meta, which duplication was previously the only way to preserve\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
+			__( "Manage WordPress and Bricks content.\n\nPage actions:\n- list: List pages/posts (optional: post_type, status, posts_per_page, paged, bricks_only)\n- search: Search Bricks pages (requires: search)\n- get: Get page with Bricks element data (requires: post_id; optional: view = detail|summary|visual|structure). Prefer view=structure on a large page: it returns compact index-aligned id/name/parent/settings-hash rows for diffing a live page against locally generated content, where detail and summary run to hundreds of KB and spill to a file\n- create: Create page with Bricks content (requires: title; optional: post_type, status, elements)\n- update_content: Replace all Bricks elements (requires: post_id, elements)\n- update_meta: Update title/status/slug/featured_image (requires: post_id)\n- delete: Delete page (requires: post_id)\n- duplicate: Duplicate page (requires: post_id)\n- apply_template: Copy a Bricks template's content onto a page server-side, with no element payload (requires: post_id, template_id; optional: mode = replace|append|prepend, regenerate_ids)\n- get_settings / update_settings: Page settings (requires: post_id; update also settings)\n- get_seo / update_seo: SEO fields via the active SEO plugin (requires: post_id)\n- get_acf_fields / set_acf_fields: ACF custom fields via ACF's own API (requires: post_id; set also fields, an object mapping field keys or names to values). Writing by field key stores both the value and its _field reference meta, which duplication was previously the only way to preserve\n- purge_cache: Purge WP Super Cache pages (requires: post_id or url). Rarely needed by hand — every content write here purges its own post automatically\n- purge_all_cache: Purge the entire WP Super Cache page cache. Use after site-wide design writes (global classes, theme styles, palettes, variables), whose blast radius per-post purging cannot know. Never automatic: on a busy site this sends every next request to PHP at once\n\nElement actions:\n- add: Add element (requires: post_id, name; optional: parent_id, position, settings, label)\n- update: Update settings and/or rename (requires: post_id, element_id, and settings or label)\n- remove: Remove element; children are reparented to root, not deleted (requires: post_id, element_id)\n- move: Move or reorder (requires: post_id, element_id; optional: target_parent_id, position)\n- bulk_update: Update many elements (requires: post_id, updates; max 50)\n- get_conditions / set_conditions: Element visibility conditions (requires: post_id, element_id)\n\nWordPress reads:\n- get_posts, get_post, get_users, get_plugins\n\nEvery write returns css_file, the regenerated post-<id>.min.css. A null css_file on a post that should have styles means the frontend is still serving the old stylesheet.", 'bricks-mcp' ),
 			$this->get_content_tool_schema(),
 			array( $this, 'tool_content' )
 		);
@@ -772,7 +782,7 @@ final class Router {
 			'properties' => array(
 				'action'         => array(
 					'type'        => 'string',
-					'enum'        => array( 'get_posts', 'get_post', 'get_users', 'get_plugins', 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo', 'get_acf_fields', 'set_acf_fields', 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ),
+					'enum'        => array( 'get_posts', 'get_post', 'get_users', 'get_plugins', 'list', 'search', 'get', 'create', 'update_content', 'update_meta', 'delete', 'duplicate', 'apply_template', 'get_settings', 'update_settings', 'get_seo', 'update_seo', 'get_acf_fields', 'set_acf_fields', 'purge_cache', 'purge_all_cache', 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ),
 					'description' => __( 'Action to perform.', 'bricks-mcp' ),
 				),
 				'post_id'        => array( 'type' => 'integer' ),
@@ -808,6 +818,10 @@ final class Router {
 					'type'                 => 'object',
 					'additionalProperties' => true,
 					'description'          => __( 'ACF values keyed by field key (field_xxx) or field name (set_acf_fields: required). Keys are safest; a name is resolved to its definition first and fails hard if ACF cannot resolve it.', 'bricks-mcp' ),
+				),
+				'url'            => array(
+					'type'        => 'string',
+					'description' => __( 'Absolute URL whose cached page to purge, without a query string (purge_cache: alternative to post_id).', 'bricks-mcp' ),
 				),
 				'description'    => array( 'type' => 'string' ),
 				'robots_noindex' => array( 'type' => 'boolean' ),
@@ -2706,6 +2720,10 @@ final class Router {
 			return $this->tool_acf_fields( $args );
 		}
 
+		if ( in_array( $action, array( 'purge_cache', 'purge_all_cache' ), true ) ) {
+			return $this->tool_purge_cache( $args );
+		}
+
 		if ( in_array( $action, array( 'add', 'update', 'remove', 'get_conditions', 'set_conditions', 'move', 'bulk_update' ), true ) ) {
 			return $this->tool_element( $args );
 		}
@@ -2740,6 +2758,46 @@ final class Router {
 		}
 
 		return $this->acf_service->get_fields( $post_id );
+	}
+
+	/**
+	 * Tool: WP Super Cache purges — routes purge_cache and purge_all_cache.
+	 *
+	 * Reached only through tool_content(), whose dispatcher has already required manage_options
+	 * for both actions.
+	 *
+	 * @param array<string, mixed> $args Tool arguments including 'action'.
+	 * @return array<string, mixed>|\WP_Error Result data or error.
+	 */
+	private function tool_purge_cache( array $args ): array|\WP_Error {
+		if ( 'purge_all_cache' === ( $args['action'] ?? '' ) ) {
+			return $this->page_cache_service->purge_all();
+		}
+
+		$post_id = isset( $args['post_id'] ) ? (int) $args['post_id'] : 0;
+		$url     = isset( $args['url'] ) ? (string) $args['url'] : '';
+
+		if ( $post_id > 0 ) {
+			$purge = $this->page_cache_service->purge_post( $post_id );
+
+			if ( null === $purge ) {
+				return new \WP_Error(
+					'bricks_mcp_wpsc_inactive',
+					__( 'WP Super Cache is not installed or not active on this site.', 'bricks-mcp' )
+				);
+			}
+
+			return $purge;
+		}
+
+		if ( '' !== $url ) {
+			return $this->page_cache_service->purge_url( $url );
+		}
+
+		return new \WP_Error(
+			'missing_target',
+			__( 'purge_cache requires post_id or url.', 'bricks-mcp' )
+		);
 	}
 
 	/**
@@ -4793,6 +4851,20 @@ final class Router {
 
 		if ( null === $css_file ) {
 			$result['css_note'] = __( 'No CSS file was written. If Bricks "CSS loading method" is set to External Files, the frontend may still serve stale styles until a builder save or `wp bricks regenerate_assets`. This is expected when the post produces no CSS at all.', 'bricks-mcp' );
+		}
+
+		/*
+		 * Page-cache evidence, same idea as css_file: the write succeeded, but is the page a
+		 * visitor gets actually the new one? Only annotated when WP Super Cache is present —
+		 * without a page cache there is nothing to be stale, so the key would be noise.
+		 */
+		if ( $this->page_cache_service->is_active() ) {
+			$purge                 = $this->bricks_service->get_last_cache_purge();
+			$result['cache_purge'] = $purge;
+
+			if ( null !== $purge && empty( $purge['purged'] ) && 'not_published' === ( $purge['reason'] ?? '' ) ) {
+				$result['cache_note'] = __( 'No cached page to purge: the post is not published. Nothing is stale.', 'bricks-mcp' );
+			}
 		}
 
 		return $result;

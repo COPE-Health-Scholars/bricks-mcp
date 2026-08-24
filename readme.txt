@@ -116,6 +116,10 @@ Yes, when configured correctly. The plugin enforces WordPress Application Passwo
 
 == Changelog ==
 
+= 1.6.3 =
+* Fix: MCP content writes now purge WP Super Cache. Writes go through update_post_meta(), which fires none of the hooks WP Super Cache purges on, so every element, settings, SEO, popup or custom-code write left the cached page serving stale markup while post-<id>.min.css was already regenerated. Per-post writes now purge via wp_cache_post_change() — the same handler WP Super Cache runs on edit_post — and every write result reports cache_purge evidence when WP Super Cache is active.
+* New: content tool purge_cache (by post_id or url) and purge_all_cache. The full purge is never automatic: it exists for site-wide design writes (global classes, theme styles, palettes, variables), whose blast radius per-post purging cannot know.
+
 = 1.6.2 =
 * Fix: importing hand-authored Bricks content no longer mangles the tree. is_flat_format() required a children key on every element, but old hand-built rows omit it on leaves; one such row flipped a faithful flat export into the nested-format converter, which rerooted every element, reminted every id, and re-sanitized all settings. children is now optional in detection and defaulted to an empty array on passthrough.
 * New: content tool get_acf_fields / set_acf_fields — read and write ACF fields through ACF's own update_field() API. Writing by field key stores both the value and its protected _field reference meta, retiring the duplicate-then-sync workaround; unresolvable field names fail hard instead of writing a value with an empty reference.

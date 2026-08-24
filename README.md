@@ -26,6 +26,7 @@ Bricks MCP is a WordPress plugin that implements an [MCP (Model Context Protocol
 - PHP 8.2+
 - Bricks Builder 1.6+ for the Bricks tools; the WordPress-wide tools and abilities work without it
 - WPForms (any edition) for the `wpforms` tool; WPForms Pro for entry deletion
+- WP Super Cache for automatic page-cache purging on writes and the `purge_cache` / `purge_all_cache` actions
 
 ## Installation
 
@@ -77,7 +78,7 @@ ChatGPT is not currently supported as an MCP client for this plugin. ChatGPT's M
 | `get_site_info` | Read WordPress site details and run connection diagnostics |
 | `get_builder_guide` | Read the Bricks builder guide before editing content |
 | `bricks` | Manage Bricks builder settings, schema, queries, and references |
-| `content` | Manage WordPress and Bricks content across posts, pages, elements, and ACF fields |
+| `content` | Manage WordPress and Bricks content across posts, pages, elements, ACF fields, and WP Super Cache purges |
 | `template` | Manage Bricks templates, conditions, and template taxonomies |
 | `design` | Manage Bricks design tokens across classes, styles, palettes, variables, and fonts |
 | `media` | Upload media, search Unsplash, manage library |
